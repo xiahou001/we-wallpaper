@@ -36,7 +36,22 @@ node server.mjs
 
 ### 开机自启(可选)
 
-把 `autostart.vbs` 放入 `shell:startup` 文件夹(Win+R → `shell:startup`),登录后服务器自动隐藏运行。
+推荐运行仓库内的 `install-autostart.vbs`，它会在当前用户的 Startup 文件夹创建一个指向仓库的快捷方式。这样仓库移动到其他目录后，只需重新运行安装脚本，不需要手动修改路径。
+
+开机时会按以下顺序自动执行:
+
+1. 启动壁纸服务器并等待 `/api/state` 可访问;
+2. 应用 ZCode 壁纸加载器;
+3. 如果 ZCode 尚未运行则启动 ZCode;
+4. 壁纸 iframe 自动显示，服务器暂时未就绪时自动重试。
+
+手动安装:
+
+```cmd
+cscript //nologo install-autostart.vbs
+```
+
+取消开机自启:删除 Startup 文件夹中的 `we-wallpaper-autostart.lnk`。
 
 ## 嵌入 Electron 应用聊天窗口(以 ZCode Desktop 为例)
 

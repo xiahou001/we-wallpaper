@@ -31,18 +31,31 @@
 
   // ── 壁纸 iframe ────────────────────────────────────────────
   function mount() {
-    if (document.getElementById('we-wp-layer')) return;
+    var old = document.getElementById('we-wp-layer');
+    if (old) {
+      if (old.src.indexOf(BASE + '/') !== 0) old.src = BASE + '/?embed=1';
+      old.style.display = 'block';
+      old.style.visibility = 'visible';
+      return;
+    }
     var f = document.createElement('iframe');
     f.id = 'we-wp-layer';
     f.setAttribute('allow', 'autoplay');
+    f.setAttribute('allowtransparency', 'true');
     f.setAttribute('title', 'wallpaper');
-    f.style.display = 'none';
-    document.body.appendChild(f);
-    (function tryLoad() {
+    f.style.cssText = 'display:block!important;visibility:visible!important;position:fixed;inset:0;width:100%;height:100%;border:0;z-index:0;pointer-events:none;background:transparent;';
+    document.body.insertBefore(f, document.body.firstChild);
+    function load() {
       fetch(BASE + '/api/state', { cache: 'no-store', mode: 'no-cors' })
-        .then(function () { f.style.display = ''; f.src = BASE + '/?embed=1'; })
-        .catch(function () { setTimeout(tryLoad, 5000); });
-    })();
+        .then(function () {
+          f.style.display = 'block';
+          f.style.visibility = 'visible';
+          if (!f.src || f.src === 'about:blank') f.src = BASE + '/?embed=1';
+        })
+        .catch(function () { setTimeout(load, 2000); });
+    }
+    f.addEventListener('error', function () { setTimeout(load, 2000); });
+    load();
   }
 
   // ── 诊断上报 ───────────────────────────────────────────────

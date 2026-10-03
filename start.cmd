@@ -1,4 +1,5 @@
 @echo off
-rem we-wallpaper 启动器:起服务器并打开默认浏览器全屏播放
+set "ROOT=%~dp0"
+start "" /min "%ProgramFiles%\nodejs\node.exe" "%ROOT%server.mjs"
+powershell -NoProfile -Command "Start-Sleep -Seconds 2"
 start "" http://127.0.0.1:7396/
-node "%~dp0server.mjs"

@@ -1,8 +1,11 @@
 @echo off
-rem (重新)给 ZCode 客户端应用聊天壁纸背景。
-rem ZCode 自动更新后 app.asar 会被替换,再跑一次本脚本即可重新生效。
-node "%~dp0asar-extract.js"
-node "%~dp0patch-index.js"
-node "%~dp0asar-patch-inplace.js"
-echo 完成。重启 ZCode 后生效。
-pause
+rem Apply the wallpaper loader before ZCode starts.
+set "ROOT=%~dp0"
+set "NODE=%ProgramFiles%\nodejs\node.exe"
+if not exist "%NODE%" set "NODE=node"
+"%NODE%" "%ROOT%asar-extract.js"
+if errorlevel 1 exit /b 1
+"%NODE%" "%ROOT%patch-index.js"
+if errorlevel 1 exit /b 1
+"%NODE%" "%ROOT%asar-patch-inplace.js"
+exit /b %errorlevel%
