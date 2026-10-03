@@ -70,6 +70,9 @@ restore.cmd   rem 一键恢复原生界面
 - ZCode 首次加载的是 `bootstrap.js`，只有壁纸服务器 `/api/state` 可用后才加载 `embed.js`，避免启动竞态和缓存旧脚本。
 - 壁纸 iframe 每 4 秒探活;服务恢复后自动加时间戳重载。播放页会向父页面发送就绪消息，超过 8 秒没有就绪握手也会自动重载。
 - 如果壁纸服务被系统结束，开机守护脚本每 5 秒自动拉起 Node 服务;不需要重新登录 Windows。
+- Scene 失败时按实时 WebGL → scene.pkg 内嵌 MP4 → preview 图顺序降级。
+- `/api/diag-log` 和 `/api/scene-progress` 提供渲染错误、目录围栏、客户端恢复和大包传输状态。
+- `settings-schema.js` 统一校验状态范围，避免 state.json 中的异常值导致播放器启动失败。
 
 如果刚更新过注入逻辑，请完全退出 ZCode 后重新打开一次，让新的 `bootstrap.js` 注入生效。
 
@@ -92,11 +95,15 @@ restore.cmd   rem 一键恢复原生界面
 | POST | `/api/advanced` `{occlusion,sceneFps}` | 遮挡暂停 / 帧率上限 |
 | POST | `/api/upload?filename=x` | 上传自定义壁纸(原始字节体) |
 | POST | `/api/scan` | 重新扫描壁纸库 |
+| GET | `/api/diag-log` | 最近渲染和客户端诊断记录 |
+| GET | `/api/scene-progress?token=x` | Scene 资源传输状态 |
+| GET | `/scene-video/<id>` | Scene 内嵌 MP4 降级源 |
 
 ## 目录结构
 
 ```
-server.mjs            零依赖 HTTP 服务器:扫描/清单/静态服务/全部 API
+server.mjs            零依赖 HTTP 服务器:扫描/清单/静态服务/诊断/降级 API
+settings-schema.js    壁纸状态唯一校验真源
 public/player.*       全屏播放页(工作台控制之外的自用形态)
 public/workbench.*    DSH 式壁纸工作台(左导航 + 四分区)
 public/bootstrap.js   ZCode 启动引导:等待服务就绪后加载 embed.js

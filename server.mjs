@@ -26,6 +26,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
 import { fileURLToPath } from 'node:url';
+import { sanitizeState } from './settings-schema.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const PORT = Number(process.env.WE_WP_PORT || 7396);
@@ -58,9 +59,10 @@ try {
     readability: { ...state.readability, ...(s.readability || {}) },
   };
 } catch {}
+state = sanitizeState(state);
 let luminance = null;   // 播放器实测壁纸亮度 0..1(内存态,不落盘)
 const saveState = () => {
-  try { fs.mkdirSync(APP_DIR, { recursive: true }); fs.writeFileSync(STATE_FILE, JSON.stringify(state, null, 2)); } catch {}
+  try { state = sanitizeState(state); fs.mkdirSync(APP_DIR, { recursive: true }); fs.writeFileSync(STATE_FILE, JSON.stringify(state, null, 2)); } catch {}
 };
 
 // ── 壁纸扫描(参考 dsh-wallpaper-engine 的 Steam 库定位逻辑)──────────────────
@@ -140,8 +142,51 @@ function scanWallpapers() {
   return list;
 }
 let inventory = scanWallpapers();
+const sceneVideoCache = new Map();
+function findEmbeddedMp4(abs) {
+  const st = fs.statSync(abs);
+  const fd = fs.openSync(abs, 'r');
+  const chunkSize = 4 * 1024 * 1024;
+  const buf = Buffer.alloc(chunkSize + 16);
+  let carry = Buffer.alloc(0);
+  let found = -1;
+  try {
+    for (let pos = 0; pos < st.size; pos += chunkSize) {
+      const n = fs.readSync(fd, buf, 0, Math.min(chunkSize, st.size - pos), pos);
+      const data = Buffer.concat([carry, buf.subarray(0, n)]);
+      const i = data.indexOf(Buffer.from('ftyp'));
+      if (i >= 4) { found = pos - carry.length + i - 4; break; }
+      carry = data.subarray(Math.max(0, data.length - 16));
+    }
+  } finally { fs.closeSync(fd); }
+  return found >= 0 ? found : null;
+}
+function sceneFallbackFile(w) {
+  if (!w || w.type !== 'scene' || !w.fileAbs) return null;
+  if (sceneVideoCache.has(w.id)) return sceneVideoCache.get(w.id);
+  const outDir = path.join(APP_DIR, 'cache', 'scene-video');
+  const out = path.join(outDir, String(w.id) + '.mp4');
+  try {
+    if (fs.existsSync(out) && fs.statSync(out).size > 1024) { sceneVideoCache.set(w.id, out); return out; }
+    const start = findEmbeddedMp4(w.fileAbs);
+    if (start == null) { sceneVideoCache.set(w.id, null); return null; }
+    fs.mkdirSync(outDir, { recursive: true });
+    const src = fs.openSync(w.fileAbs, 'r'); const dst = fs.openSync(out, 'w');
+    try { const buf = Buffer.alloc(1024 * 1024); for (let pos = start; pos < fs.statSync(w.fileAbs).size;) { const n = fs.readSync(src, buf, 0, Math.min(buf.length, fs.statSync(w.fileAbs).size - pos), pos); if (!n) break; fs.writeSync(dst, buf, 0, n); pos += n; } } finally { fs.closeSync(src); fs.closeSync(dst); }
+    sceneVideoCache.set(w.id, out); return out;
+  } catch (err) { diagRecord('scene-fallback-error', { id: w.id, error: String(err && err.message || err).slice(0, 240) }); sceneVideoCache.set(w.id, null); return null; }
+}
 
 // ── HTTP 基础设施 ─────────────────────────────────────────────────────────────
+const diagEntries = [];
+const sceneProgress = new Map();
+function diagRecord(kind, payload) {
+  const entry = { t: Date.now(), kind, ...payload }; diagEntries.push(entry);
+  if (diagEntries.length > 200) diagEntries.shift();
+  try { fs.mkdirSync(APP_DIR, { recursive: true }); fs.appendFileSync(path.join(APP_DIR, 'diag.log'), JSON.stringify(entry) + '\n'); } catch {}
+}
+function sceneProgressSnapshot(token) { return sceneProgress.get(token) || { ok: false, token, served: 0, active: 0 }; }
+
 function sendJSON(res, code, obj) {
   const body = JSON.stringify(obj);
   res.writeHead(code, { 'Content-Type': 'application/json; charset=utf-8', 'Cache-Control': 'no-store' });
@@ -267,6 +312,11 @@ const server = http.createServer(async (req, res) => {
       });
     }
     if (p === '/api/state') return sendJSON(res, 200, { ...state, luminance });
+    if (p === '/api/diag-log') return sendJSON(res, 200, { entries: diagEntries.slice(-80) });
+    if (p === '/api/scene-progress') {
+      const token = String(u.searchParams.get('token') || '');
+      return sendJSON(res, 200, sceneProgressSnapshot(token));
+    }
     if (p === '/api/select' && method === 'POST') {
       const body = JSON.parse((await readBody(req)) || '{}');
       const w = inventory.find((x) => x.id === String(body.id));
@@ -442,6 +492,11 @@ html, body { background: #101216 !important; }
       });
       return res.end(js);
     }
+    if (p === '/api/client-diag') {
+      const body = await readBody(req);
+      try { diagRecord('client', JSON.parse(body)); } catch { diagRecord('client', { detail: body.slice(0, 500) }); }
+      res.statusCode = 204; return res.end();
+    }
     if (p === '/api/diag') {
       if (method === 'OPTIONS') {
         res.writeHead(204, {
@@ -452,6 +507,7 @@ html, body { background: #101216 !important; }
         return res.end();
       }
       const body = await readBody(req);
+      try { diagRecord('client', JSON.parse(body)); } catch { diagRecord('client', { detail: body.slice(0, 500) }); }
       try {
         fs.mkdirSync(APP_DIR, { recursive: true });
         fs.appendFileSync(path.join(APP_DIR, 'diag.log'),
@@ -481,6 +537,15 @@ html, body { background: #101216 !important; }
     if (p === '/player.js') return serveFile(path.join(PUBLIC_DIR, 'player.js'), req, res);
     if (p === '/panel.js') return serveFile(path.join(PUBLIC_DIR, 'panel.js'), req, res, { cache: 'no-store' });
     if (p === '/player.css') return serveFile(path.join(PUBLIC_DIR, 'player.css'), req, res);
+
+    // ---- Scene 内嵌视频降级（首次请求时探测并缓存）----
+    if (p.startsWith('/scene-video/')) {
+      const id = p.slice('/scene-video/'.length);
+      const w = inventory.find((x) => x.id === id);
+      const fallback = w && sceneFallbackFile(w);
+      if (!fallback) { res.statusCode = 404; return res.end('no embedded scene video'); }
+      return serveFile(fallback, req, res, { cache: 'public, max-age=3600' });
+    }
 
     // ---- 预览图 ----
     if (p.startsWith('/preview/')) {
@@ -513,8 +578,11 @@ html, body { background: #101216 !important; }
       try { fileAbs = Buffer.from(token, 'base64url').toString('utf8'); } catch { res.statusCode = 400; return res.end('bad token'); }
       if (!fileAbs || (!fs.existsSync(fileAbs) && !fs.existsSync(path.dirname(fileAbs)))) { res.statusCode = 404; return res.end('stale token'); }
       const abs = fenced(path.dirname(fileAbs), rel);
-      if (!abs) { res.statusCode = 403; return res.end('forbidden-scene-files'); }
-      return serveFile(abs, req, res, { cache: 'public, max-age=3600' });
+      if (!abs) { diagRecord('fence', { token, rel }); res.statusCode = 403; return res.end('forbidden-scene-files'); }
+      const prog = sceneProgress.get(token) || { ok: true, token, served: 0, active: 0, startedAt: Date.now() };
+      prog.active = 1; prog.startedAt ||= Date.now(); sceneProgress.set(token, prog);
+      res.once('finish', () => { prog.active = 0; prog.served = Date.now(); prog.size = (() => { try { return fs.statSync(abs).size; } catch { return 0; } })(); });
+      return serveFile(abs, req, res, { cache: path.extname(abs).toLowerCase() === '.html' ? 'no-store' : 'public, max-age=3600' });
     }
 
     // ---- vendored WebWallGL 渲染页(哈希名资源 immutable)----

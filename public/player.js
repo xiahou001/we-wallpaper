@@ -22,6 +22,9 @@
   let layer = null;          // 当前层元素(iframe / video / img)
   let hudTimer = 0;
   let sawGesture = false;    // 首次用户手势后允许出声
+  let recoveryTimer = 0;
+  let recoveryAttempts = 0;
+  let sceneWatchdog = 0;
 
   const api = (path, body) => fetch(path, body ? {
     method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body),
@@ -34,11 +37,48 @@
 
   // ── 挂载/卸载 ──────────────────────────────────────────────
   function unmount() {
+    clearTimeout(recoveryTimer);
+    clearTimeout(sceneWatchdog);
     if (!layer) return;
     try { layer.src = 'about:blank'; } catch {}
     layer.remove();
     layer = null;
     mountedId = null;
+  }
+
+  function wallpaperFailed(w, reason) {
+    const active = current();
+    if (!w || !active || active.id !== w.id) return;
+    const attempt = ++recoveryAttempts;
+    try {
+      fetch('/api/diag', { method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ event: 'playback-recovery', id: w.id, type: w.type, attempt, reason }) }).catch(() => {});
+    } catch {}
+    if (attempt <= 3) {
+      clearTimeout(recoveryTimer);
+      recoveryTimer = setTimeout(() => {
+        if (current().id !== w.id) return;
+        unmount();
+        mountedId = null;
+        mountCurrent();
+      }, Math.min(8000, 1000 * attempt));
+      return;
+    }
+    // Scene 优先尝试从 scene.pkg 中抽出的内嵌 MP4，再降级到作者预览图。
+    if (w.type === 'scene') {
+      unmount();
+      const v = document.createElement('video');
+      v.loop = true; v.muted = effectiveMuted(); v.autoplay = true; v.playsInline = true;
+      v.src = '/scene-video/' + encodeURIComponent(w.id); v.className = 'layer-enter';
+      v.addEventListener('loadeddata', () => { recoveryAttempts = 0; v.classList.add('layer-on'); });
+      v.addEventListener('error', () => { unmount(); if (w.preview) { mountFallback(w); $('hud-title').textContent = w.title + '（预览图）'; } });
+      stage.appendChild(v); layer = v; mountedId = w.id; v.play().catch(() => {});
+      $('hud-title').textContent = w.title + '（视频降级）';
+    } else if (w.preview) {
+      unmount();
+      mountFallback(w);
+      $('hud-title').textContent = w.title + '（预览图）';
+    }
   }
 
   function mountScene(w) {
@@ -54,10 +94,21 @@
       + '&mediaBase=' + encodeURIComponent(location.origin + '/scene-files');
     iframe.src = src;
     iframe.className = 'layer-enter';
+    iframe.addEventListener('load', () => {
+      requestAnimationFrame(() => iframe.classList.add('layer-on'));
+    });
+    iframe.addEventListener('error', () => wallpaperFailed(w, 'scene-iframe-error'));
     stage.appendChild(iframe);
     layer = iframe;
-    requestAnimationFrame(() => iframe.classList.add('layer-on'));
     mountedId = w.id;
+    clearTimeout(sceneWatchdog);
+    sceneWatchdog = setTimeout(() => {
+      if (layer !== iframe || mountedId !== w.id) return;
+      try {
+        const ready = iframe.contentWindow && iframe.contentWindow.__wp;
+        if (!ready) wallpaperFailed(w, 'scene-timeout');
+      } catch { wallpaperFailed(w, 'scene-timeout'); }
+    }, 12000);
   }
 
   function mountVideo(w) {
@@ -68,6 +119,17 @@
     v.playsInline = true;
     v.src = w.mediaUrl;
     v.className = 'layer-enter';
+    v.addEventListener('loadeddata', () => {
+      recoveryAttempts = 0;
+      requestAnimationFrame(() => v.classList.add('layer-on'));
+    });
+    v.addEventListener('error', () => wallpaperFailed(w, 'video-error'));
+    v.addEventListener('stalled', () => {
+      clearTimeout(recoveryTimer);
+      recoveryTimer = setTimeout(() => {
+        if (layer === v && v.readyState < 2) wallpaperFailed(w, 'video-stalled');
+      }, 8000);
+    });
     stage.appendChild(v);
     layer = v;
     v.play().catch(() => {});
@@ -102,6 +164,8 @@
       return;
     }
     if (w.id === mountedId) return;
+    recoveryAttempts = 0;
+    clearTimeout(recoveryTimer);
     const ms = state.transition ? (state.transition.ms || 0) : 0;
     // 旧层淡出(交叉淡化:新旧层叠放,旧的盖不住新的)
     if (layer) {
