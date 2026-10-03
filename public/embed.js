@@ -32,6 +32,8 @@
   // ── 壁纸 iframe ────────────────────────────────────────────
   var frame = null;
   var frameLoaded = false;
+  var frameReady = false;
+  var frameStartedAt = 0;
   var serverWasDown = true;
   var healthTimer = 0;
   var retryTimer = 0;
@@ -43,6 +45,8 @@
   function reloadFrame() {
     if (!frame) return;
     frameLoaded = false;
+    frameReady = false;
+    frameStartedAt = Date.now();
     showFrame();
     frame.src = BASE + '/?embed=1&recover=' + Date.now();
   }
@@ -56,7 +60,8 @@
         var wasDown = serverWasDown;
         serverWasDown = false;
         showFrame();
-        if (wasDown || !frameLoaded) reloadFrame();
+        var handshakeExpired = frameStartedAt && Date.now() - frameStartedAt > 8000;
+        if (wasDown || !frameLoaded || (handshakeExpired && !frameReady)) reloadFrame();
       })
       .catch(function () {
         serverWasDown = true;
@@ -77,12 +82,21 @@
       document.body.insertBefore(frame, document.body.firstChild);
     }
     frame.addEventListener('load', function () { frameLoaded = true; showFrame(); });
-    frame.addEventListener('error', function () { frameLoaded = false; clearTimeout(retryTimer); retryTimer = setTimeout(checkServer, 2000); });
+    frame.addEventListener('error', function () { frameLoaded = false; frameReady = false; clearTimeout(retryTimer); retryTimer = setTimeout(checkServer, 2000); });
     showFrame();
+    frameStartedAt = Date.now();
     checkServer();
     clearInterval(healthTimer);
     healthTimer = setInterval(checkServer, 4000);
   }
+
+  window.addEventListener('message', function (event) {
+    if (!frame || event.source !== frame.contentWindow || event.origin !== BASE) return;
+    if (event.data && event.data.source === 'we-wallpaper' && event.data.type === 'ready') {
+      frameReady = true;
+      showFrame();
+    }
+  });
 
   // ── 诊断上报 ───────────────────────────────────────────────
   function diag() {

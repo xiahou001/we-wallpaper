@@ -424,6 +424,15 @@ html, body { background: #101216 !important; }
       });
       return res.end(css);
     }
+    if (p === '/bootstrap.js') {
+      const js = fs.readFileSync(path.join(__dirname, 'public', 'bootstrap.js'), 'utf8');
+      res.writeHead(200, {
+        'Content-Type': 'text/javascript; charset=utf-8',
+        'Cache-Control': 'no-store',
+        'Access-Control-Allow-Origin': '*',
+      });
+      return res.end(js);
+    }
     if (p === '/embed.js') {
       const js = fs.readFileSync(path.join(__dirname, 'public', 'embed.js'), 'utf8');
       res.writeHead(200, {

@@ -26,13 +26,17 @@ console.log('slot offset=' + OFF + ' size=' + SIZE);
 const origBuf = Buffer.alloc(SIZE);
 fs.readSync(fd, origBuf, 0, SIZE, OFF);
 const orig = origBuf.toString('utf8');
-if (orig.includes('embed.css')) { console.log('ALREADY PATCHED IN ASAR'); process.exit(0); }
 if (!orig.includes('<title>ZCode</title>')) { console.error('UNEXPECTED CONTENT'); process.exit(1); }
 
-// 压缩原文件:去掉每行行首空白与空行(HTML/CSS/JS 语义不受影响)
+// 压缩原文件并 upgrade any previous loader to the retrying bootstrap.
 const compact = orig.replace(/^[ \t]+/gm, '').replace(/\n{2,}/g, '\n');
-const inject = '<link rel="stylesheet" href="http://127.0.0.1:7396/embed.css"/><script src="http://127.0.0.1:7396/embed.js" defer></script>';
-const patched = compact.replace('<title>ZCode</title>', '<title>ZCode</title>' + inject);
+const inject = '<link rel="stylesheet" href="http://127.0.0.1:7396/embed.css?v=2"/><script src="http://127.0.0.1:7396/bootstrap.js?v=2" defer></script>';
+const loader = /<link\s+rel="stylesheet"\s+href="http:\/\/127\.0\.0\.1:7396\/embed\.css[^"]*"\s*\/?><script\s+src="http:\/\/127\.0\.0\.1:7396\/(?:embed|bootstrap)\.js[^"]*"\s+defer><\/script>/g;
+const patched = loader.test(compact)
+  ? compact.replace(loader, inject)
+  : compact.includes('bootstrap.js')
+    ? compact
+    : compact.replace('<title>ZCode</title>', '<title>ZCode</title>' + inject);
 const body = Buffer.from(patched, 'utf8');
 if (body.length > SIZE) { console.error('DOES NOT FIT: need ' + body.length + ' > ' + SIZE); process.exit(1); }
 const out = Buffer.alloc(SIZE, 0x20); // 空格补齐

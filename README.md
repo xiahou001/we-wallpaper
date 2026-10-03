@@ -65,6 +65,14 @@ restore.cmd   rem 一键恢复原生界面
 
 刷新/重启客户端后:聊天窗口背景即为动态壁纸,右下角出现 🖼 按钮打开工作台;若客户端支持自定义设置页注入,设置侧边栏也会出现 **Wallpaper** 条目。
 
+加载可靠性说明:
+
+- ZCode 首次加载的是 `bootstrap.js`，只有壁纸服务器 `/api/state` 可用后才加载 `embed.js`，避免启动竞态和缓存旧脚本。
+- 壁纸 iframe 每 4 秒探活;服务恢复后自动加时间戳重载。播放页会向父页面发送就绪消息，超过 8 秒没有就绪握手也会自动重载。
+- 如果壁纸服务被系统结束，开机守护脚本每 5 秒自动拉起 Node 服务;不需要重新登录 Windows。
+
+如果刚更新过注入逻辑，请完全退出 ZCode 后重新打开一次，让新的 `bootstrap.js` 注入生效。
+
 ## HTTP API
 
 | 方法 | 路径 | 说明 |
@@ -91,6 +99,7 @@ restore.cmd   rem 一键恢复原生界面
 server.mjs            零依赖 HTTP 服务器:扫描/清单/静态服务/全部 API
 public/player.*       全屏播放页(工作台控制之外的自用形态)
 public/workbench.*    DSH 式壁纸工作台(左导航 + 四分区)
+public/bootstrap.js   ZCode 启动引导:等待服务就绪后加载 embed.js
 public/embed.js       客户端注入脚本:壁纸层 + 样式热更新 + 设置页钩子
 public/panel.js       聊天窗口内的按钮与工作台模态入口
 public/embed.css      动态生成的界面样式(玻璃α/描边/亮度/缩放,由服务器按状态输出)

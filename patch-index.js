@@ -7,16 +7,13 @@ const path = require('path');
 const ZCODE_DIR = process.env.ZCODE_DIR || path.join(process.env.LOCALAPPDATA || '', 'Programs', 'ZCode');
 const TARGET = path.join(ZCODE_DIR, 'resources', 'app', 'out', 'renderer', 'index.html');
 let html = fs.readFileSync(TARGET, 'utf8');
-if (html.includes('embed.css')) { console.log('ALREADY PATCHED'); process.exit(0); }
-
 const anchor = '<title>ZCode</title>';
 if (!html.includes(anchor)) { console.error('ANCHOR NOT FOUND'); process.exit(1); }
-// 剥掉旧版注入(v1 全量 style+script / v2 重试版)
-html = html.replace(/<style id="we-wp-style">[\s\S]*?<\/style>\s*/g, '');
-html = html.replace(/<script id="we-wp-script">[\s\S]*?<\/script>\s*/g, '');
-
-const inject = `<link rel="stylesheet" href="http://127.0.0.1:7396/embed.css" /><script src="http://127.0.0.1:7396/embed.js" defer></script>`;
-
-html = html.replace(anchor, anchor + inject);
+// Replace old loaders as well as installing the bootstrap on a fresh client.
+const inject = `<link rel="stylesheet" href="http://127.0.0.1:7396/embed.css?v=2" /><script src="http://127.0.0.1:7396/bootstrap.js?v=2" defer></script>`;
+const loader = /<link\s+rel="stylesheet"\s+href="http:\/\/127\.0\.0\.1:7396\/embed\.css[^"]*"\s*\/?><script\s+src="http:\/\/127\.0\.0\.1:7396\/(?:embed|bootstrap)\.js[^"]*"\s+defer><\/script>/g;
+if (loader.test(html)) html = html.replace(loader, inject);
+else if (!html.includes('bootstrap.js')) html = html.replace(anchor, anchor + inject);
+else { console.log('ALREADY PATCHED'); process.exit(0); }
 fs.writeFileSync(TARGET, html);
 console.log('PATCHED ' + TARGET);

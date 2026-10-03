@@ -27,6 +27,10 @@
     method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body),
   } : undefined).then((r) => r.json());
   const current = () => wallpapers.find((w) => w.id === state.currentId) || null;
+  function notifyParentReady() {
+    if (!EMBED || window.parent === window) return;
+    try { window.parent.postMessage({ source: 'we-wallpaper', type: 'ready' }, '*'); } catch {}
+  }
 
   // ── 挂载/卸载 ──────────────────────────────────────────────
   function unmount() {
@@ -310,6 +314,8 @@
     mountCurrent();
     if (EMBED) {
       document.body.classList.add('embed');
+      notifyParentReady();
+      setTimeout(notifyParentReady, 1000);
     } else {
       pokeHud();
     }
