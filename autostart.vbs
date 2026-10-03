@@ -36,17 +36,29 @@ Function ZCodeRunning()
 End Function
 
 shell.CurrentDirectory = projectDir
-If Not ServerReady() Then
+
+Sub EnsureServer()
+  If ServerReady() Then Exit Sub
   command = Q(nodeExe) & " " & Q(projectDir & "\server.mjs")
   shell.Run command, 0, False
   For i = 1 To 20
     If ServerReady() Then Exit For
     WScript.Sleep 500
   Next
-End If
+End Sub
+
+' Start the service before patching or launching the client.
+EnsureServer()
 
 ' Do not touch a running client. On a fresh login, patch first and launch once.
 If Not ZCodeRunning() Then
   shell.Run Q(projectDir & "\apply.cmd"), 0, True
   If fso.FileExists(zcodeExe) Then shell.Run Q(zcodeExe), 0, False
 End If
+
+' Keep the service alive. The old script exited after one launch, so a later
+' Node crash left ZCode's iframe permanently blank until the next login.
+Do
+  WScript.Sleep 5000
+  EnsureServer()
+Loop
