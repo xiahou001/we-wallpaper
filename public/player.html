@@ -1,0 +1,38 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <title>动态壁纸</title>
+  <link rel="stylesheet" href="/player.css" />
+</head>
+<body>
+  <!-- 壁纸层:scene → webwallgl 渲染页 iframe;video → <video>。由 player.js 动态挂载 -->
+  <div id="stage"></div>
+
+  <!-- 控制浮层:鼠标移动时浮现,闲置自动隐藏 -->
+  <div id="hud" class="hud hud--hidden">
+    <div class="hud__bar">
+      <div class="hud__title" id="hud-title">—</div>
+      <div class="hud__btns">
+        <button id="btn-list"   class="hbtn" title="壁纸列表 (L)">☰</button>
+        <button id="btn-pause"  class="hbtn" title="暂停/恢复 (空格)">⏸</button>
+        <button id="btn-mute"   class="hbtn" title="静音/取消 (M)">🔊</button>
+        <button id="btn-rotate" class="hbtn" title="自动轮换">🔁</button>
+        <button id="btn-full"   class="hbtn" title="全屏 (F)">⛶</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- 壁纸列表抽屉 -->
+  <div id="panel" class="panel panel--hidden">
+    <div class="panel__head">
+      <span>壁纸库</span>
+      <button id="panel-close" class="hbtn" title="关闭 (Esc)">✕</button>
+    </div>
+    <div class="panel__list" id="panel-list"></div>
+  </div>
+
+  <script src="/player.js"></script>
+</body>
+</html>

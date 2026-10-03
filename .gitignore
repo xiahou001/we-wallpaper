@@ -1,0 +1,7 @@
+# 本机运行时产物(不入库)
+*.log
+diag.log
+
+# 系统杂项
+Thumbs.db
+.DS_Store
