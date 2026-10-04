@@ -22,6 +22,7 @@
  * 状态持久化:~/.we-wallpaper/state.json
  */
 import http from 'node:http';
+import { spawn } from 'node:child_process';
 import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
@@ -61,6 +62,31 @@ try {
 } catch {}
 state = sanitizeState(state);
 let luminance = null;   // 播放器实测壁纸亮度 0..1(内存态,不落盘)
+let nowPlaying = null;  // Windows Now Playing(SMTC via PowerShell,内存态)
+const lyricsCache = new Map();
+
+// ── Now Playing 轮询(Windows SMTC via PowerShell WinRT,无原生依赖)──────────
+// 拉起常驻 PowerShell(tools/nowplaying.ps1),每 2s 输出一行 JSON;失败静默。
+function startNowPlayingPoller() {
+  if (process.platform !== 'win32') return;
+  try {
+    const ps = spawn('powershell.exe', ['-NoProfile', '-ExecutionPolicy', 'Bypass', '-File',
+      path.join(__dirname, 'tools', 'nowplaying.ps1')], { stdio: ['ignore', 'pipe', 'ignore'] });
+    let buf = '';
+    ps.stdout.on('data', (c) => {
+      buf += c.toString('utf8');
+      let nl;
+      while ((nl = buf.indexOf('\n')) >= 0) {
+        const line = buf.slice(0, nl).trim();
+        buf = buf.slice(nl + 1);
+        if (!line) continue;
+        try { nowPlaying = JSON.parse(line); } catch {}
+      }
+    });
+    ps.on('error', () => { nowPlaying = null; });
+    ps.unref();
+  } catch {}
+}
 const saveState = () => {
   try { state = sanitizeState(state); fs.mkdirSync(APP_DIR, { recursive: true }); fs.writeFileSync(STATE_FILE, JSON.stringify(state, null, 2)); } catch {}
 };
@@ -88,14 +114,10 @@ function scanWallpapers() {
   }
   for (const extra of state.workshopDirs || []) roots.push(extra);
   // 自定义壁纸(工作台上传):~/.we-wallpaper/custom/<id>/project.json + 媒体文件
+  // 注意:custom 目录本身就是"工坊根"(其子目录 = 壁纸 id),与 Steam 根同构;
+  // 之前把壁纸目录当根 push,主循环会把里面的文件再当 id 拼一层 → 永远扫不到。
   const customRoot = path.join(APP_DIR, 'custom');
-  let customIds = [];
-  try { customIds = fs.readdirSync(customRoot); } catch {}
-  for (const id of customIds) {
-    const dir = path.join(customRoot, id);
-    try { JSON.parse(fs.readFileSync(path.join(dir, 'project.json'), 'utf8')); roots.push(dir); } catch {}
-    // 上面的通用扫描按 project.json 的 file 字段找主文件;type 也来自它
-  }
+  if (fs.existsSync(customRoot)) roots.push(customRoot);
   const list = [];
   for (const root of roots) {
     let ids = [];
@@ -293,7 +315,7 @@ const server = http.createServer(async (req, res) => {
     }
 
     // ---- API ----
-    if (p === '/api/wallpapers') {
+        if (p === '/api/wallpapers') {
       return sendJSON(res, 200, {
         wallpapers: inventory.map((w) => {
           const sceneBase = w.type === 'scene' && w.fileAbs
@@ -304,6 +326,7 @@ const server = http.createServer(async (req, res) => {
             preview: w.previewAbs ? `/preview/${w.id}` : null,
             hasPkg: w.type === 'scene',
             sceneBase,                                   // scene:渲染页 src 段(其下拼 scene.pkg)
+            webEntry: w.type === 'web' && rel ? `/web-live/${w.id}/${rel}` : null,  // web:shim 注入入口
             mediaUrl: (w.type === 'video' || w.type === 'image') && rel ? `/media/${w.id}/${rel}` : null,
             sizeBytes: (() => { try { return fs.statSync(w.fileAbs).size; } catch { return 0; } })(),
           };
@@ -389,8 +412,35 @@ const server = http.createServer(async (req, res) => {
       const body = JSON.parse((await readBody(req)) || '{}');
       if (body.occlusion != null && ['never', 'hidden', 'focus'].includes(body.occlusion)) state.occlusion = body.occlusion;
       if (body.sceneFps != null) state.sceneFps = [15, 30, 60].includes(Number(body.sceneFps)) ? Number(body.sceneFps) : state.sceneFps;
+      if (body.lyrics != null) state.lyrics = !!body.lyrics;
       saveState();
       return sendJSON(res, 200, state);
+    }
+    if (p === '/api/nowplaying') {
+      return sendJSON(res, 200, nowPlaying || { available: false });
+    }
+    if (p === '/api/lyrics') {
+      // lrclib.net 在线歌词(DSH 同源):按标题/艺术家搜索同步 LRC,带缓存
+      const title = u.searchParams.get('title') || '';
+      const artist = u.searchParams.get('artist') || '';
+      if (!title) return sendJSON(res, 200, { synced: null });
+      const key = title + '|' + artist;
+      if (lyricsCache.has(key)) return sendJSON(res, 200, { synced: lyricsCache.get(key) });
+      try {
+        const lr = await fetch('https://lrclib.net/api/search?track_name=' + encodeURIComponent(title)
+          + '&artist_name=' + encodeURIComponent(artist), {
+          headers: { 'User-Agent': 'we-wallpaper/1.0 (github.com/xiahou001/we-wallpaper)' },
+          signal: AbortSignal.timeout(8000),
+        });
+        const list = lr.ok ? await lr.json() : [];
+        const hit = (Array.isArray(list) ? list : []).find((x) => x && x.syncedLyrics);
+        const synced = hit ? String(hit.syncedLyrics) : null;
+        lyricsCache.set(key, synced);
+        if (lyricsCache.size > 64) lyricsCache.delete(lyricsCache.keys().next().value);
+        return sendJSON(res, 200, { synced });
+      } catch {
+        return sendJSON(res, 200, { synced: null });
+      }
     }
     if (p === '/api/playlists' && method === 'POST') {
       const body = JSON.parse((await readBody(req)) || '{}');
@@ -524,6 +574,10 @@ html, body { background: #101216 !important; }
     if (p === '/embed-test') {
       return serveFile(path.join(PUBLIC_DIR, 'embed-test.html'), req, res);
     }
+    if (p === '/np-test') {
+      res.setHeader("Cache-Control", "no-store");
+      return serveFile(path.join(PUBLIC_DIR, 'np-test.html'), req, res);
+    }
     if (p === '/workbench') {
       return serveFile(path.join(PUBLIC_DIR, 'workbench.html'), req, res);
     }
@@ -537,6 +591,36 @@ html, body { background: #101216 !important; }
     if (p === '/player.js') return serveFile(path.join(PUBLIC_DIR, 'player.js'), req, res);
     if (p === '/panel.js') return serveFile(path.join(PUBLIC_DIR, 'panel.js'), req, res, { cache: 'no-store' });
     if (p === '/player.css') return serveFile(path.join(PUBLIC_DIR, 'player.css'), req, res);
+
+    // ---- Web 壁纸(sandbox iframe 载荷:HTML 注入 web-shim,提供 WE API 兼容层)----
+    if (p === '/web-shim.js') {
+      return serveFile(path.join(VENDOR_DIR, 'web-shim.js'), req, res, { cache: 'no-store' });
+    }
+    if (p.startsWith('/web-live/')) {
+      const rest = p.slice('/web-live/'.length);   // <id>/<file...>
+      const slash = rest.indexOf('/');
+      const id = slash >= 0 ? rest.slice(0, slash) : rest;
+      const rel = slash >= 0 ? rest.slice(slash + 1) : '';
+      const w = inventory.find((x) => x.id === id);
+      if (!w || w.type !== 'web') { res.statusCode = 404; return res.end('no such web wallpaper'); }
+      // 空路径 → 入口文件;目录请求 → 入口文件
+      let target = rel || path.relative(w.dir, w.fileAbs).split(path.sep).join('/');
+      let abs = fenced(w.dir, target);
+      if (abs && fs.statSync(abs).isDirectory()) abs = fenced(w.dir, target + '/' + path.basename(w.fileAbs));
+      if (!abs || !fs.existsSync(abs) || fs.statSync(abs).isDirectory()) { res.statusCode = 404; return res.end('not found'); }
+      if (/\.(html?|htm)$/i.test(abs)) {
+        // 注入 shim 作为首个脚本(必须在作者脚本前注册 WE API)
+        let html = fs.readFileSync(abs, 'utf8');
+        const shimTag = '<script src="/web-shim.js"></script>';
+        if (!html.includes('/web-shim.js')) {
+          if (/<head[^>]*>/i.test(html)) html = html.replace(/<head[^>]*>/i, (m) => m + shimTag);
+          else html = shimTag + html;
+        }
+        res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8', 'Cache-Control': 'no-store' });
+        return res.end(html);
+      }
+      return serveFile(abs, req, res, { cache: 'public, max-age=600' });
+    }
 
     // ---- Scene 内嵌视频降级（首次请求时探测并缓存）----
     if (p.startsWith('/scene-video/')) {
@@ -606,3 +690,4 @@ server.listen(PORT, '127.0.0.1', () => {
   console.log(`[we-wallpaper] 状态文件: ${STATE_FILE}`);
 });
 scheduleRotation();
+startNowPlayingPoller();

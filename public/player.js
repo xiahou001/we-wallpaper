@@ -24,6 +24,7 @@
   let sawGesture = false;    // 首次用户手势后允许出声
   let recoveryTimer = 0;
   let recoveryAttempts = 0;
+  let suppressRecoveryReset = false;
   let sceneWatchdog = 0;
 
   const api = (path, body) => fetch(path, body ? {
@@ -38,7 +39,8 @@
   // ── 挂载/卸载 ──────────────────────────────────────────────
   function unmount() {
     clearTimeout(recoveryTimer);
-    clearTimeout(sceneWatchdog);
+    clearInterval(sceneWatchdog);
+    webPointerTarget = null;
     if (!layer) return;
     try { layer.src = 'about:blank'; } catch {}
     layer.remove();
@@ -58,6 +60,7 @@
       clearTimeout(recoveryTimer);
       recoveryTimer = setTimeout(() => {
         if (current().id !== w.id) return;
+        suppressRecoveryReset = true;   // 重试挂载:不清零恢复计数
         unmount();
         mountedId = null;
         mountCurrent();
@@ -101,14 +104,31 @@
     stage.appendChild(iframe);
     layer = iframe;
     mountedId = w.id;
-    clearTimeout(sceneWatchdog);
-    sceneWatchdog = setTimeout(() => {
-      if (layer !== iframe || mountedId !== w.id) return;
+    clearInterval(sceneWatchdog);
+    // 首帧看护:renderers 在 pkg 整包下载完之前不发任何东西,预算随包大小放宽;
+    // 就绪判定 = __wp 存在且 __wpStats 报告 fps>0(只查存在会漏掉"加载了但渲染不出")
+    const budgetMs = 12000 + Math.min(18000, Math.round((w.sizeBytes || 0) / 2e6) * 1000);
+    sceneWatchdog = setInterval(() => {
+      if (layer !== iframe || mountedId !== w.id) { clearInterval(sceneWatchdog); return; }
       try {
-        const ready = iframe.contentWindow && iframe.contentWindow.__wp;
-        if (!ready) wallpaperFailed(w, 'scene-timeout');
-      } catch { wallpaperFailed(w, 'scene-timeout'); }
-    }, 12000);
+        const win = iframe.contentWindow;
+        const st = win && win.__wpStats;
+        const frame = st && typeof st.frame === 'function' ? st.frame() : null;
+        if (win && win.__wp && frame && frame.running && frame.fps > 0) {
+          clearInterval(sceneWatchdog);
+          recoveryAttempts = 0;
+          return;                                   // 正常渲染中
+        }
+        if (Date.now() - startAt > budgetMs) {
+          clearInterval(sceneWatchdog);
+          wallpaperFailed(w, frame ? 'scene-no-frames' : 'scene-timeout');
+        }
+      } catch {
+        clearInterval(sceneWatchdog);
+        wallpaperFailed(w, 'scene-timeout');
+      }
+    }, 1000);
+    const startAt = Date.now();
   }
 
   function mountVideo(w) {
@@ -146,6 +166,44 @@
     mountedId = w.id;
   }
 
+  function mountWeb(w) {
+    // Web 壁纸:严格沙箱 iframe(只给 allow-scripts,工坊 HTML 不得继承宿主身份),
+    // 服务器端在 HTML 里注入 /web-shim.js(WE API 兼容层);指针经 postMessage 转发。
+    const iframe = document.createElement('iframe');
+    iframe.setAttribute('sandbox', 'allow-scripts');
+    iframe.setAttribute('allowtransparency', 'true');
+    iframe.src = w.webEntry;
+    iframe.className = 'layer-enter';
+    stage.appendChild(iframe);
+    layer = iframe;
+    mountedId = w.id;
+    requestAnimationFrame(() => iframe.classList.add('layer-on'));
+    // 指针转发:iframe 是 pointer-events:none,作者脚本的鼠标交互经 postMessage 还原
+    webPointerTarget = iframe;
+  }
+
+  let webPointerTarget = null;
+  function forwardPointer(e) {
+    const f = webPointerTarget;
+    if (!f || layer !== f) return;
+    const r = f.getBoundingClientRect();
+    try {
+      f.contentWindow.postMessage({
+        __we: 1, op: 'pointer',
+        x: e.clientX - r.left, y: e.clientY - r.top,
+        b: e.buttons || 0, m: (e.altKey ? 1 : 0) | (e.ctrlKey ? 2 : 0) | (e.shiftKey ? 4 : 0),
+      }, '*');
+    } catch {}
+  }
+  window.addEventListener('mousemove', forwardPointer, { passive: true });
+  window.addEventListener('mousedown', forwardPointer, { passive: true });
+  window.addEventListener('mouseup', forwardPointer, { passive: true });
+  window.addEventListener('mouseout', () => {
+    const f = webPointerTarget;
+    if (!f || layer !== f) return;
+    try { f.contentWindow.postMessage({ __we: 1, op: 'pointerLeave' }, '*'); } catch {}
+  }, { passive: true });
+
   function mountFallback(w) {
     const img = document.createElement('img');
     if (w.preview) img.src = w.preview;
@@ -164,7 +222,9 @@
       return;
     }
     if (w.id === mountedId) return;
-    recoveryAttempts = 0;
+    // 恢复重试路径不清零计数(否则 attempt 恒为 1,永远到不了视频/预览降级)
+    if (!suppressRecoveryReset) recoveryAttempts = 0;
+    suppressRecoveryReset = false;
     clearTimeout(recoveryTimer);
     const ms = state.transition ? (state.transition.ms || 0) : 0;
     // 旧层淡出(交叉淡化:新旧层叠放,旧的盖不住新的)
@@ -184,6 +244,7 @@
     if (w.playable && w.type === 'scene') mountScene(w);
     else if (w.playable && w.type === 'video') mountVideo(w);
     else if (w.playable && w.type === 'image') mountImage(w);
+    else if (w.playable && w.type === 'web' && w.webEntry) mountWeb(w);
     else mountFallback(w);
     if (layer) {
       layer.style.zIndex = '1';                 // 新层压住淡出中的旧层
@@ -267,6 +328,59 @@
     } catch (e) {}
   }
   setInterval(sampleLuminance, 5000);
+
+  // ── Now Playing + 在线歌词跑马灯(lrclib.net,与 DSH 同源;默认关闭)───────
+  let lyricsBox = null;
+  if (EMBED) {
+    lyricsBox = document.createElement('div');
+    lyricsBox.style.cssText = 'position:fixed;left:0;right:0;bottom:9vh;text-align:center;z-index:2;pointer-events:none;'
+      + 'font-size:20px;font-weight:600;letter-spacing:.5px;color:#fff;opacity:.88;'
+      + 'text-shadow:0 2px 8px rgba(0,0,0,.85),0 0 24px rgba(0,0,0,.5);transition:opacity .6s ease;font-family:"Segoe UI",system-ui,sans-serif;';
+    lyricsBox.textContent = '';
+    document.body.appendChild(lyricsBox);
+  }
+  let npKey = '';
+  let lrcLines = [];          // [{t:秒, text}]
+  function parseLrc(lrc) {
+    const out = [];
+    for (const line of String(lrc).split('\n')) {
+      const m = line.match(/^((?:\[\d+:\d+(?:\.\d+)?\])+)(.*)$/);
+      if (!m) continue;
+      const text = m[2].trim();
+      for (const t of m[1].matchAll(/\[(\d+):(\d+(?:\.\d+)?)\]/g)) {
+        out.push({ t: Number(t[1]) * 60 + Number(t[2]), text });
+      }
+    }
+    return out.sort((a, b) => a.t - b.t);
+  }
+  function lyricAt(pos) {
+    let cur = '';
+    for (const l of lrcLines) { if (l.t <= pos + 0.2) { if (l.text) cur = l.text; } else break; }
+    return cur;
+  }
+  async function refreshNowPlaying() {
+    if (!EMBED) return;
+    try {
+      const np = await api('/api/nowplaying');
+      if (!np || !np.available || !np.title) { if (lyricsBox) lyricsBox.textContent = ''; npKey = ''; return; }
+      const key = np.title + '|' + np.artist;
+      if (key !== npKey) {
+        npKey = key;
+        lrcLines = [];
+        if (state.lyrics) {
+          const r = await api('/api/lyrics?title=' + encodeURIComponent(np.title) + '&artist=' + encodeURIComponent(np.artist || ''));
+          lrcLines = r && r.synced ? parseLrc(r.synced) : [];
+        }
+      }
+      // 歌词行按 SMTC 时间轴位置取当前句
+      if (lyricsBox) {
+        if (!state.lyrics || !lrcLines.length) { lyricsBox.textContent = ''; return; }
+        const line = lyricAt((np.position || 0) + 0.3);
+        if (lyricsBox.textContent !== line) lyricsBox.textContent = line;
+      }
+    } catch {}
+  }
+  setInterval(refreshNowPlaying, 2000);
 
   // ── 轮询(服务器是单真源,skill 的改动会即时生效)──────────────
   let pollBusy = false;

@@ -20,7 +20,7 @@
     if (text != null) e.textContent = text;
     return e;
   }
-  var typeLabel = function (w) { return w.type === 'scene' ? '场景' : w.type === 'video' ? '视频' : w.type === 'image' ? '图片' : w.type; };
+    var typeLabel = function (w) { return w.type === 'scene' ? '场景' : w.type === 'video' ? '视频' : w.type === 'image' ? '图片' : w.type === 'web' ? '网页' : w.type; };
   var cur = function () { return wallpapers.find(function (w) { return state && w.id === state.currentId; }) || null; };
 
   function loadData() {
@@ -280,6 +280,21 @@
       });
       content.appendChild(occRow);
       content.appendChild(el('div', 'muted', '场景帧率改动在下次切换壁纸时生效;遮挡暂停对视频与场景壁纸同时生效。'));
+
+      content.appendChild(el('div', 'sec', '媒体集成(源自 dsh-wallpaper-engine)'));
+      var lyrRow = el('div', 'row');
+      var lyr = el('button', 'btn' + (state.lyrics ? ' on' : ''), state.lyrics ? '● 歌词跑马灯已开启' : '○ 歌词跑马灯已关闭');
+      lyr.title = 'Now Playing 播放音乐时,在聊天窗口底部显示 lrclib.net 的同步歌词(默认关闭)';
+      lyr.onclick = function () { api('/api/advanced', { lyrics: !state.lyrics }).then(function (s) { state = s; render(); }); };
+      lyrRow.appendChild(lyr);
+      content.appendChild(lyrRow);
+      var npLine = el('div', 'muted', '正在读取系统媒体信息…');
+      api('/api/nowplaying').then(function (np) {
+        npLine.textContent = np && np.available && np.title
+          ? 'Now Playing:' + np.title + (np.artist ? ' — ' + np.artist : '') + ' · ' + (np.status === 'playing' ? '播放中' : np.status)
+          : 'Now Playing:当前没有正在播放的媒体(支持所有走 Windows 媒体控件的播放器)';
+      }).catch(function () { npLine.textContent = 'Now Playing:不可用'; });
+      content.appendChild(npLine);
 
       content.appendChild(el('div', 'sec', '维护'));
       var row2 = el('div', 'row');
