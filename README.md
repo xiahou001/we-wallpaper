@@ -93,12 +93,15 @@ restore.cmd   rem 一键恢复原生界面
 | POST | `/api/appearance` `{main,row,sidebar,stroke,brightness,zoom}` | 外观(玻璃α/描边/亮度/缩放) |
 | POST | `/api/readability` `{auto}` | 智能可读性开关 |
 | POST | `/api/luminance` `{v}` | 播放器亮度采样上报(0~1) |
-| POST | `/api/advanced` `{occlusion,sceneFps}` | 遮挡暂停 / 帧率上限 |
-| POST | `/api/upload?filename=x` | 上传自定义壁纸(原始字节体) |
+| POST | `/api/advanced` `{occlusion,sceneFps,lyrics}` | 遮挡暂停 / 帧率上限 / 歌词跑马灯开关 |
+| GET | `/api/nowplaying` | Windows 媒体控件当前播放(SMTC) |
+| GET | `/api/lyrics?title=x&artist=y` | lrclib.net 同步歌词搜索(带缓存) |
+| POST | `/api/upload?filename=x` | 上传自定义壁纸(原始字节体,支持图片/视频/单文件 HTML) |
 | POST | `/api/scan` | 重新扫描壁纸库 |
 | GET | `/api/diag-log` | 最近渲染和客户端诊断记录 |
 | GET | `/api/scene-progress?token=x` | Scene 资源传输状态 |
 | GET | `/scene-video/<id>` | Scene 内嵌 MP4 降级源 |
+| GET | `/web-live/<id>/<file>` | Web 壁纸载荷(HTML 自动注入 WE API shim) |
 
 ## 目录结构
 

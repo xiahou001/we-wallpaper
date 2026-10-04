@@ -390,7 +390,10 @@
     try {
       const prev = JSON.stringify(state);
       state = await api('/api/state');
-      if (JSON.stringify(state) !== prev) {
+      // 亮度采样每 5s 变一次,剔除后对比,避免无意义的控制下发
+      const cur = Object.assign({}, state, { luminance: undefined });
+      const prevClean = Object.assign({}, JSON.parse(prev), { luminance: undefined });
+      if (JSON.stringify(cur) !== JSON.stringify(prevClean)) {
         mountCurrent();
         applyPaused();
         applyVolume();

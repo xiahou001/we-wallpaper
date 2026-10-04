@@ -202,6 +202,12 @@ function sceneFallbackFile(w) {
 // ── HTTP 基础设施 ─────────────────────────────────────────────────────────────
 const diagEntries = [];
 const sceneProgress = new Map();
+function trackProgress(token) {                     // 上限保护,防长期运行泄漏
+  if (sceneProgress.size > 64) { const k = sceneProgress.keys().next().value; sceneProgress.delete(k); }
+  let p = sceneProgress.get(token);
+  if (!p) { p = { ok: true, token, served: 0, active: 0, startedAt: Date.now() }; sceneProgress.set(token, p); }
+  return p;
+}
 function diagRecord(kind, payload) {
   const entry = { t: Date.now(), kind, ...payload }; diagEntries.push(entry);
   if (diagEntries.length > 200) diagEntries.shift();
@@ -465,10 +471,11 @@ const server = http.createServer(async (req, res) => {
       const filename = (u.searchParams.get('filename') || '').replace(/[\\/:*?"<>|]/g, '_');
       if (!filename) { res.statusCode = 400; return res.end('filename required'); }
       const ext = path.extname(filename).toLowerCase();
-      if (!['.mp4', '.webm', '.mov', '.jpg', '.jpeg', '.png', '.webp', '.gif'].includes(ext)) {
+      if (!['.mp4', '.webm', '.mov', '.jpg', '.jpeg', '.png', '.webp', '.gif', '.html', '.htm'].includes(ext)) {
         res.statusCode = 400; return res.end('unsupported file type');
       }
-      const type = ['.jpg', '.jpeg', '.png', '.webp', '.gif'].includes(ext) ? 'image' : 'video';
+      const type = ['.jpg', '.jpeg', '.png', '.webp', '.gif'].includes(ext) ? 'image'
+        : ['.html', '.htm'].includes(ext) ? 'web' : 'video';
       const id = 'custom-' + Date.now();
       const dir = path.join(APP_DIR, 'custom', id);
       fs.mkdirSync(dir, { recursive: true });
@@ -663,8 +670,8 @@ html, body { background: #101216 !important; }
       if (!fileAbs || (!fs.existsSync(fileAbs) && !fs.existsSync(path.dirname(fileAbs)))) { res.statusCode = 404; return res.end('stale token'); }
       const abs = fenced(path.dirname(fileAbs), rel);
       if (!abs) { diagRecord('fence', { token, rel }); res.statusCode = 403; return res.end('forbidden-scene-files'); }
-      const prog = sceneProgress.get(token) || { ok: true, token, served: 0, active: 0, startedAt: Date.now() };
-      prog.active = 1; prog.startedAt ||= Date.now(); sceneProgress.set(token, prog);
+      const prog = trackProgress(token);
+      prog.active = 1; prog.startedAt ||= Date.now();
       res.once('finish', () => { prog.active = 0; prog.served = Date.now(); prog.size = (() => { try { return fs.statSync(abs).size; } catch { return 0; } })(); });
       return serveFile(abs, req, res, { cache: path.extname(abs).toLowerCase() === '.html' ? 'no-store' : 'public, max-age=3600' });
     }

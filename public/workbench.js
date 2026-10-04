@@ -74,10 +74,10 @@
     ctl.appendChild(pause); ctl.appendChild(mute);
     content.appendChild(ctl);
 
-    content.appendChild(el('div', 'sec', '自定义壁纸(上传图片 / 视频)'));
+    content.appendChild(el('div', 'sec', '自定义壁纸(上传图片 / 视频 / 单文件网页)'));
     var up = el('div', 'row');
     var file = document.createElement('input');
-    file.type = 'file'; file.accept = 'video/mp4,video/webm,image/*'; file.style.display = 'none';
+    file.type = 'file'; file.accept = 'video/mp4,video/webm,image/*,.html,.htm'; file.style.display = 'none';
     var upBtn = el('button', 'btn primary', '⬆ 上传壁纸');
     var upStat = el('span', 'muted', '支持 mp4 / webm / jpg / png / gif');
     upBtn.onclick = function () { file.click(); };
@@ -327,7 +327,10 @@
   // 状态轮询(打开期间保持同步)
   setInterval(function () {
     api('/api/state').then(function (s) {
-      if (!panelDirty(s) && JSON.stringify(s) !== JSON.stringify(state)) { state = s; playlists = s.playlists || []; render(); }
+      // 亮度采样每 5s 都在变,剔除后再对比,否则工作台每 5s 重渲染打断滑杆操作
+      var a = Object.assign({}, s, { luminance: undefined });
+      var b = Object.assign({}, state, { luminance: undefined });
+      if (!panelDirty() && JSON.stringify(a) !== JSON.stringify(b)) { state = s; playlists = s.playlists || []; render(); }
     }).catch(function () {});
   }, 3000);
   function panelDirty() { return editorName != null; }
