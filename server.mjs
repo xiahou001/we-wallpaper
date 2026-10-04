@@ -125,7 +125,12 @@ function scanWallpapers() {
     for (const id of ids) {
       const dir = path.join(root, id);
       let proj;
-      try { proj = JSON.parse(fs.readFileSync(path.join(dir, 'project.json'), 'utf8')); } catch { continue; }
+      // 有些编辑器/旧工坊包写出的 project.json 带 UTF-8 BOM,JSON.parse 会直接抛错,
+      // 之前会把整张壁纸当无效条目静默跳过 —— 先剥掉 BOM 再解析。
+      try {
+        const raw = fs.readFileSync(path.join(dir, 'project.json'), 'utf8').replace(/^\uFEFF/, '');
+        proj = JSON.parse(raw);
+      } catch { continue; }
       const fileAbs = proj.file ? path.join(dir, proj.file) : null;
       const fileOk = fileAbs && fs.existsSync(fileAbs);
       const type = String(proj.type || '').toLowerCase();
@@ -164,7 +169,74 @@ function scanWallpapers() {
   return list;
 }
 let inventory = scanWallpapers();
+let lastInventoryScan = Date.now();
+const INVENTORY_TTL_MS = 5000;                      // 自动扫描的最小间隔,避免多客户端轮询时反复读盘
 const sceneVideoCache = new Map();
+
+/** 重新扫描 Steam 工坊目录。force=true(手动"重新扫描壁纸库")立即扫描;
+ *  自动请求在 TTL 内复用结果,让新下载的壁纸自动出现而不过度读盘。 */
+function refreshInventory(force = false) {
+  if (!force && Date.now() - lastInventoryScan < INVENTORY_TTL_MS) return inventory;
+  inventory = scanWallpapers();
+  lastInventoryScan = Date.now();
+  return inventory;
+}
+
+/** 让状态跟随壁纸库:已删除/退订的壁纸从当前选择和轮播列表里移除。 */
+function pruneStateToList() {
+  const ids = new Set(inventory.map((w) => w.id));
+  let changed = false;
+  if (state.currentId && !ids.has(state.currentId)) { state.currentId = null; changed = true; }
+  for (const pl of state.playlists) {
+    const next = pl.ids.filter((id) => ids.has(id));
+    if (next.length !== pl.ids.length) { pl.ids = next; changed = true; }
+  }
+  if (state.rotate.playlist && !state.playlists.some((pl) => pl.name === state.rotate.playlist)) {
+    state.rotate.playlist = null; changed = true;
+  }
+  if (changed) saveState();
+  return changed;
+}
+
+/** 清理已删除壁纸留下的磁盘/内存缓存(Scene 内嵌视频、进度记录),
+ *  避免反复订阅+退订后缓存无限增长。 */
+function pruneCaches(validIds) {
+  let freed = 0;
+  for (const [id, abs] of [...sceneVideoCache]) {
+    if (validIds.has(id)) continue;
+    sceneVideoCache.delete(id);
+    if (abs) { try { fs.rmSync(abs, { force: true }); freed++; } catch {} }
+  }
+  const dir = path.join(APP_DIR, 'cache', 'scene-video');
+  try {
+    for (const f of fs.readdirSync(dir)) {
+      const id = f.replace(/\.mp4$/i, '');
+      if (validIds.has(id)) continue;
+      try { fs.rmSync(path.join(dir, f), { force: true }); freed++; } catch {}
+    }
+  } catch {}
+  for (const token of [...sceneProgress.keys()]) {
+    let abs = '';
+    try { abs = Buffer.from(token, 'base64url').toString('utf8'); } catch {}
+    if (abs && !fs.existsSync(abs) && !fs.existsSync(path.dirname(abs))) sceneProgress.delete(token);
+  }
+  return freed;
+}
+
+/** 扫描 + 让状态/缓存跟随壁纸库,返回本次变化统计。 */
+function syncInventory(force) {
+  const before = new Set(inventory.map((w) => w.id));
+  refreshInventory(force);
+  const after = new Set(inventory.map((w) => w.id));
+  const prunedState = pruneStateToList();
+  const prunedCache = pruneCaches(after);
+  return {
+    added: [...after].filter((id) => !before.has(id)).length,
+    removed: [...before].filter((id) => !after.has(id)).length,
+    prunedState,
+    prunedCache,
+  };
+}
 function findEmbeddedMp4(abs) {
   const st = fs.statSync(abs);
   const fd = fs.openSync(abs, 'r');
@@ -321,7 +393,10 @@ const server = http.createServer(async (req, res) => {
     }
 
     // ---- API ----
-        if (p === '/api/wallpapers') {
+    if (p === '/api/wallpapers') {
+      // Steam 可以在服务器运行期间新增或移除工坊目录:轮询时按 TTL 重新扫描,
+      // 并清理已删除/退订壁纸留下的失效当前选择和轮播 ID。
+      syncInventory(false);
       return sendJSON(res, 200, {
         wallpapers: inventory.map((w) => {
           const sceneBase = w.type === 'scene' && w.fileAbs
@@ -377,8 +452,16 @@ const server = http.createServer(async (req, res) => {
       return sendJSON(res, 200, state);
     }
     if (p === '/api/scan' && method === 'POST') {
-      inventory = scanWallpapers();
-      return sendJSON(res, 200, { count: inventory.length });
+      // 手动"重新扫描壁纸库":立即扫描,并让新增/删除同步到状态与列表,清理失效缓存。
+      const r = syncInventory(true);
+      return sendJSON(res, 200, {
+        count: inventory.length,
+        added: r.added,
+        removed: r.removed,
+        prunedState: r.prunedState,
+        prunedCache: r.prunedCache,
+        state,
+      });
     }
     if (p === '/api/close' && method === 'POST') {
       state.currentId = null;                       // 关闭壁纸层,回深色底

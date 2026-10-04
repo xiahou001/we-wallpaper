@@ -403,6 +403,20 @@
     pollBusy = false;
   }
   setInterval(poll, 2000);
+  let inventoryBusy = false;
+  async function refreshInventory() {
+    if (inventoryBusy) return;
+    inventoryBusy = true;
+    try {
+      const inv = await api('/api/wallpapers');
+      const next = inv.wallpapers || [];
+      const oldKey = wallpapers.map((w) => w.id + ':' + w.title + ':' + w.playable).join('|');
+      const newKey = next.map((w) => w.id + ':' + w.title + ':' + w.playable).join('|');
+      if (oldKey !== newKey) { wallpapers = next; renderList(); }
+    } catch {}
+    inventoryBusy = false;
+  }
+  setInterval(refreshInventory, 5000);
 
   // ── HUD 交互 ───────────────────────────────────────────────
   function pokeHud() {

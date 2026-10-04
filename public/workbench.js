@@ -7,6 +7,7 @@
   var state = null, wallpapers = [], playlists = [];
   var page = 'wall';
   var editorName = null, editorIds = null;
+  var scanStatus = '';              // "重新扫描"的结果提示,跨 render 保留
   var content = document.getElementById('content');
 
   function api(path, body) {
@@ -23,13 +24,17 @@
     var typeLabel = function (w) { return w.type === 'scene' ? '场景' : w.type === 'video' ? '视频' : w.type === 'image' ? '图片' : w.type === 'web' ? '网页' : w.type; };
   var cur = function () { return wallpapers.find(function (w) { return state && w.id === state.currentId; }) || null; };
 
-  function loadData() {
-    return Promise.all([api('/api/wallpapers'), api('/api/state')])
-      .then(function (rs) {
-        wallpapers = rs[0].wallpapers || [];
-        state = rs[1];
-        playlists = state.playlists || [];
-      });
+  // forceScan=true 时先调 /api/scan(手动重新扫描 / 打开面板),
+  // 让 Steam 刚下载或退订的壁纸立即反映到列表。
+  function loadData(forceScan) {
+    var pre = forceScan ? api('/api/scan', {}).catch(function () { return null; }) : Promise.resolve(null);
+    return pre.then(function () {
+      return Promise.all([api('/api/wallpapers'), api('/api/state')]);
+    }).then(function (rs) {
+      wallpapers = rs[0].wallpapers || [];
+      state = rs[1];
+      playlists = state.playlists || [];
+    });
   }
 
   function render() {
@@ -299,9 +304,29 @@
       content.appendChild(el('div', 'sec', '维护'));
       var row2 = el('div', 'row');
       var scan = el('button', 'btn primary', '⟳ 重新扫描壁纸库');
-      scan.onclick = function () { api('/api/scan', {}).then(loadData).then(render); };
+      // 手动扫描:立即重读工坊目录,并汇报新增/删除/清理结果(否则"点了几次都不知道有没有生效")。
+      scan.onclick = function () {
+        scan.disabled = true;
+        scanStatus = '正在扫描 Steam 工坊目录…';
+        api('/api/scan', {}).then(function (r) {
+          return loadData().then(function () {
+            var bits = [];
+            if (r && r.added) bits.push('新增 ' + r.added + ' 张');
+            if (r && r.removed) bits.push('移除 ' + r.removed + ' 张');
+            if (r && r.prunedCache) bits.push('清理缓存 ' + r.prunedCache + ' 项');
+            scanStatus = '已扫描完成:共 ' + ((r && r.count) || wallpapers.length) + ' 张壁纸 · '
+              + (bits.length ? bits.join('，') : '没有变化');
+            render();
+          });
+        }).catch(function () {
+          scanStatus = '扫描失败:请确认壁纸服务器 (127.0.0.1:7396) 正在运行';
+          render();
+        });
+      };
       row2.appendChild(scan);
       content.appendChild(row2);
+      content.appendChild(el('div', 'muted', scanStatus
+        || '删除或退订壁纸后点这里可立即同步;平时每 5 秒也会自动同步。'));
 
       content.appendChild(el('div', 'sec', '状态'));
       content.appendChild(el('div', 'muted',
@@ -323,7 +348,7 @@
     if (e.key === 'Escape') parent.postMessage('we-wp-close', '*');
   });
 
-  loadData().then(render).catch(function () { render(); });
+  loadData(true).then(render).catch(function () { render(); });
   // 状态轮询(打开期间保持同步)
   setInterval(function () {
     api('/api/state').then(function (s) {
@@ -333,5 +358,16 @@
       if (!panelDirty() && JSON.stringify(a) !== JSON.stringify(b)) { state = s; playlists = s.playlists || []; render(); }
     }).catch(function () {});
   }, 3000);
+  var inventoryBusy = false;
+  setInterval(function () {
+    if (inventoryBusy || panelDirty()) return;
+    inventoryBusy = true;
+    Promise.all([api('/api/wallpapers'), api('/api/state')]).then(function (rs) {
+      var next = rs[0].wallpapers || [];
+      var oldKey = wallpapers.map(function (x) { return x.id + ':' + x.title + ':' + x.playable; }).join('|');
+      var newKey = next.map(function (x) { return x.id + ':' + x.title + ':' + x.playable; }).join('|');
+      if (oldKey !== newKey) { wallpapers = next; state = rs[1]; playlists = state.playlists || []; render(); }
+    }).catch(function () {}).then(function () { inventoryBusy = false; });
+  }, 5000);
   function panelDirty() { return editorName != null; }
 })();

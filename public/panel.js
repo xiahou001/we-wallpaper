@@ -54,7 +54,7 @@
       var frame = document.createElement('div');
       frame.className = 'modal';
       var iframe = document.createElement('iframe');
-      iframe.src = BASE + '/workbench';
+      iframe.src = BASE + '/workbench?refresh=' + Date.now();
       iframe.setAttribute('title', '壁纸工作台');
       iframe.setAttribute('allow', 'autoplay');
       frame.appendChild(iframe);
