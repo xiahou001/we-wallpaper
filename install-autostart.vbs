@@ -11,6 +11,6 @@ Set shortcut = shell.CreateShortcut(target)
 shortcut.TargetPath = WScript.FullName
 shortcut.Arguments = Chr(34) & root & "\autostart.vbs" & Chr(34)
 shortcut.WorkingDirectory = root
-shortcut.Description = "Start we-wallpaper and ZCode with the wallpaper loader"
+shortcut.Description = "Start we-wallpaper wallpaper server only"
 shortcut.Save
 WScript.Echo "Installed: " & target

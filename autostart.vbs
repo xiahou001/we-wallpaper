@@ -1,18 +1,14 @@
-' Start the wallpaper server before ZCode, then apply the loader before launching ZCode.
-' This file stays in the repository; install-autostart.vbs creates a Startup shortcut to it.
-Dim fso, shell, projectDir, nodeExe, command, zcodeExe
+' Wallpaper-only startup watchdog.
+' This script never launches ZCode or zcode-host.
+Dim fso, shell, projectDir, nodeExe, command
 Set fso = CreateObject("Scripting.FileSystemObject")
 Set shell = CreateObject("WScript.Shell")
 projectDir = fso.GetParentFolderName(WScript.ScriptFullName)
 nodeExe = shell.ExpandEnvironmentStrings("%ProgramFiles%") & "\nodejs\node.exe"
 If Not fso.FileExists(nodeExe) Then nodeExe = "node"
-zcodeExe = shell.ExpandEnvironmentStrings("%LOCALAPPDATA%") & "\Programs\ZCode\ZCode.exe"
-If Not fso.FileExists(zcodeExe) Then zcodeExe = shell.ExpandEnvironmentStrings("%ProgramFiles%") & "\ZCode\ZCode.exe"
-
 Function Q(ByVal value)
   Q = Chr(34) & value & Chr(34)
 End Function
-
 Function ServerReady()
   On Error Resume Next
   Dim req
@@ -24,19 +20,7 @@ Function ServerReady()
   Err.Clear
   On Error GoTo 0
 End Function
-
-Function ZCodeRunning()
-  On Error Resume Next
-  Dim svc, procs
-  Set svc = GetObject("winmgmts:\\.\root\cimv2")
-  Set procs = svc.ExecQuery("Select ProcessId from Win32_Process where Name='ZCode.exe'")
-  ZCodeRunning = (procs.Count > 0)
-  Err.Clear
-  On Error GoTo 0
-End Function
-
 shell.CurrentDirectory = projectDir
-
 Sub EnsureServer()
   If ServerReady() Then Exit Sub
   command = Q(nodeExe) & " " & Q(projectDir & "\server.mjs")
@@ -46,18 +30,7 @@ Sub EnsureServer()
     WScript.Sleep 500
   Next
 End Sub
-
-' Start the service before patching or launching the client.
 EnsureServer()
-
-' Do not touch a running client. On a fresh login, patch first and launch once.
-If Not ZCodeRunning() Then
-  shell.Run Q(projectDir & "\apply.cmd"), 0, True
-  If fso.FileExists(zcodeExe) Then shell.Run Q(zcodeExe), 0, False
-End If
-
-' Keep the service alive. The old script exited after one launch, so a later
-' Node crash left ZCode's iframe permanently blank until the next login.
 Do
   WScript.Sleep 5000
   EnsureServer()
