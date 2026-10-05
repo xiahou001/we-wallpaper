@@ -6,6 +6,8 @@ export const DEFAULTS = {
   transition: { kind: 'crossfade', ms: 1800 },
   appearance: { main: 0, row: 52, sidebar: 55, brightness: 100, stroke: 35, zoom: 100 },
   readability: { auto: true }, occlusion: 'hidden', sceneFps: 30, playlists: [], workshopDirs: [],
+  lyrics: false,        // 在线歌词跑马灯(默认关闭,与 DSH 一致)
+  contentFilter: false, // 内容分级过滤:隐藏 R 级壁纸(DSH 功能)
 };
 const num = (v, min, max, fallback) => { const n = Number(v); return Number.isFinite(n) ? Math.max(min, Math.min(max, n)) : fallback; };
 export function sanitizeState(input = {}) {
@@ -27,5 +29,7 @@ export function sanitizeState(input = {}) {
   s.sceneFps = [15,30,60].includes(Number(input.sceneFps)) ? Number(input.sceneFps) : 30;
   s.playlists = Array.isArray(input.playlists) ? input.playlists.filter(p => p && String(p.name || '').trim()).map(p => ({ name: String(p.name).trim(), ids: Array.isArray(p.ids) ? p.ids.map(String) : [] })) : [];
   s.workshopDirs = Array.isArray(input.workshopDirs) ? input.workshopDirs.map(String).filter(Boolean) : [];
+  s.lyrics = Boolean(input.lyrics);
+  s.contentFilter = Boolean(input.contentFilter);
   return s;
 }

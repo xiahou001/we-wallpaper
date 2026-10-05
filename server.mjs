@@ -134,6 +134,8 @@ function scanWallpapers() {
       const fileAbs = proj.file ? path.join(dir, proj.file) : null;
       const fileOk = fileAbs && fs.existsSync(fileAbs);
       const type = String(proj.type || '').toLowerCase();
+      // 内容分级(WE 官方分级:Everyone / PG / PG13 / R 等),供工作台过滤
+      const rating = String(proj.contentrating || '').toLowerCase();
       let previewAbs = proj.preview ? path.join(dir, proj.preview) : null;
       if (!previewAbs || !fs.existsSync(previewAbs)) {
         previewAbs = ['preview.jpg', 'preview.gif', 'preview.png']
@@ -153,16 +155,16 @@ function scanWallpapers() {
             if (pkgs.length === 1) mainAbs = path.join(dir, pkgs[0]);
           } catch {}
         }
-        if (mainAbs) list.push({ id, title: proj.title || id, type: 'scene', dir, fileAbs: mainAbs, previewAbs, playable: true });
-        else list.push({ id, title: proj.title || id, type, dir, fileAbs: null, previewAbs, playable: false });
+        if (mainAbs) list.push({ id, title: proj.title || id, contentrating: rating, type: 'scene', dir, fileAbs: mainAbs, previewAbs, playable: true });
+        else list.push({ id, title: proj.title || id, contentrating: rating, type, dir, fileAbs: null, previewAbs, playable: false });
       } else if (type === 'video' && fileOk) {
-        list.push({ id, title: proj.title || id, type: 'video', dir, fileAbs, previewAbs, playable: true });
+        list.push({ id, title: proj.title || id, contentrating: rating, type: 'video', dir, fileAbs, previewAbs, playable: true });
       } else if (type === 'image' && fileOk) {
-        list.push({ id, title: proj.title || id, type: 'image', dir, fileAbs, previewAbs: fileAbs, playable: true });
+        list.push({ id, title: proj.title || id, contentrating: rating, type: 'image', dir, fileAbs, previewAbs: fileAbs, playable: true });
       } else if (type === 'web' && fileOk) {
-        list.push({ id, title: proj.title || id, type: 'web', dir, fileAbs, previewAbs, playable: true });
+        list.push({ id, title: proj.title || id, contentrating: rating, type: 'web', dir, fileAbs, previewAbs, playable: true });
       } else {
-        list.push({ id, title: proj.title || id, type, dir, fileAbs: null, previewAbs, playable: false });
+        list.push({ id, title: proj.title || id, contentrating: rating, type, dir, fileAbs: null, previewAbs, playable: false });
       }
     }
   }
@@ -362,7 +364,8 @@ function scheduleRotation() {
   const ms = Math.max(1, Number(state.rotate.intervalMin) || 30) * 60_000;
   rotateTimer = setInterval(() => {
     const pl = state.playlists.find((p) => p.name === state.rotate.playlist);
-    const pool = inventory.filter((w) => w.playable && (pl ? pl.ids.includes(w.id) : true));
+    const hidden = state.contentFilter ? new Set(['r', 'mature']) : null;
+    const pool = inventory.filter((w) => w.playable && !(hidden && hidden.has((w.contentrating || '').toLowerCase())) && (pl ? pl.ids.includes(w.id) : true));
     if (pool.length < 1) return;
     const idx = pool.findIndex((w) => w.id === state.currentId);
     state.currentId = pool[(idx + 1) % pool.length].id;
@@ -404,6 +407,7 @@ const server = http.createServer(async (req, res) => {
           const rel = w.fileAbs ? path.relative(w.dir, w.fileAbs).split(path.sep).map(encodeURIComponent).join('/') : null;
           return {
             id: w.id, title: w.title, type: w.type, playable: w.playable,
+            contentrating: w.contentrating || null,
             preview: w.previewAbs ? `/preview/${w.id}` : null,
             hasPkg: w.type === 'scene',
             sceneBase,                                   // scene:渲染页 src 段(其下拼 scene.pkg)
@@ -502,6 +506,7 @@ const server = http.createServer(async (req, res) => {
       if (body.occlusion != null && ['never', 'hidden', 'focus'].includes(body.occlusion)) state.occlusion = body.occlusion;
       if (body.sceneFps != null) state.sceneFps = [15, 30, 60].includes(Number(body.sceneFps)) ? Number(body.sceneFps) : state.sceneFps;
       if (body.lyrics != null) state.lyrics = !!body.lyrics;
+      if (body.contentFilter != null) state.contentFilter = !!body.contentFilter;
       saveState();
       return sendJSON(res, 200, state);
     }

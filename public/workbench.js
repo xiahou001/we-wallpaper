@@ -100,6 +100,12 @@
     up.appendChild(upBtn); up.appendChild(upStat); up.appendChild(file);
     content.appendChild(up);
 
+    content.appendChild(el('div', 'sec', '内容分级过滤(源自 dsh-wallpaper-engine)'));
+    var cfRow = el('div', 'row');
+    var cf = el('button', 'btn' + (state.contentFilter ? ' on' : ''), state.contentFilter ? '● 已隐藏 R 级' : '○ 不过滤');
+    cf.onclick = function () { api('/api/advanced', { contentFilter: !state.contentFilter }).then(function (s) { state = s; render(); }); };
+    cfRow.appendChild(cf);
+    content.appendChild(cfRow);
     content.appendChild(el('div', 'sec', '选择壁纸(' + wallpapers.filter(function (x) { return x.playable; }).length + ' 张可用)'));
     var grid = el('div', 'grid');
     wallpapers.forEach(function (wp) {

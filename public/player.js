@@ -19,6 +19,7 @@
   let wallpapers = [];
   let state = { currentId: null, paused: false, volume: 1, rotate: { enabled: false, intervalMin: 30 } };
   let mountedId = null;
+  let mountedKind = null;    // scene|video|image|web
   let layer = null;          // 当前层元素(iframe / video / img)
   let hudTimer = 0;
   let sawGesture = false;    // 首次用户手势后允许出声
@@ -108,6 +109,7 @@
     // 首帧看护:renderers 在 pkg 整包下载完之前不发任何东西,预算随包大小放宽;
     // 就绪判定 = __wp 存在且 __wpStats 报告 fps>0(只查存在会漏掉"加载了但渲染不出")
     const budgetMs = 12000 + Math.min(18000, Math.round((w.sizeBytes || 0) / 2e6) * 1000);
+    let startAt = Date.now();
     sceneWatchdog = setInterval(() => {
       if (layer !== iframe || mountedId !== w.id) { clearInterval(sceneWatchdog); return; }
       try {
@@ -117,18 +119,25 @@
         if (win && win.__wp && frame && frame.running && frame.fps > 0) {
           clearInterval(sceneWatchdog);
           recoveryAttempts = 0;
-          return;                                   // 正常渲染中
+          pushSceneMedia();          // 就绪即推送 Now Playing(媒体响应型壁纸)
+          return;                    // 正常渲染中
         }
+        // 区分「还在下载」与「出不了帧」(DSH 同款):载荷在传输则顺延预算
         if (Date.now() - startAt > budgetMs) {
-          clearInterval(sceneWatchdog);
-          wallpaperFailed(w, frame ? 'scene-no-frames' : 'scene-timeout');
+          fetch('/api/scene-progress?token=' + encodeURIComponent(w.sceneBase || ''), { cache: 'no-store' })
+            .then((r) => r.json())
+            .then((p) => {
+              if (p && p.active > 0) { startAt = Date.now() + 5000; return; }   // 仍在下载:续期
+              clearInterval(sceneWatchdog);
+              wallpaperFailed(w, frame ? 'scene-no-frames' : 'scene-timeout');
+            })
+            .catch(() => { clearInterval(sceneWatchdog); wallpaperFailed(w, frame ? 'scene-no-frames' : 'scene-timeout'); });
         }
       } catch {
         clearInterval(sceneWatchdog);
         wallpaperFailed(w, 'scene-timeout');
       }
     }, 1000);
-    const startAt = Date.now();
   }
 
   function mountVideo(w) {
@@ -180,6 +189,11 @@
     requestAnimationFrame(() => iframe.classList.add('layer-on'));
     // 指针转发:iframe 是 pointer-events:none,作者脚本的鼠标交互经 postMessage 还原
     webPointerTarget = iframe;
+    // 帧率上限同样对 web 壁纸生效(shim 的 rAF 节流)
+    iframe.addEventListener('load', () => {
+      try { iframe.contentWindow.postMessage({ __we: 1, op: 'setFps', n: state.sceneFps || 30 }, '*'); } catch {}
+      applyPaused();   // 挂载后立刻同步暂停态(加载前 postMessage 会被丢)
+    });
   }
 
   let webPointerTarget = null;
@@ -259,6 +273,16 @@
 
   // ── 控制下发 ───────────────────────────────────────────────
   const effectiveMuted = () => state.volume <= 0;
+  const layerKind = () => {
+    if (!layer) return null;
+    if (layer.tagName === 'VIDEO') return 'video';
+    if (layer.tagName === 'IMG') return 'image';
+    return webPointerTarget === layer ? 'web' : 'scene';
+  };
+  function shimSend(op, extra) {
+    // Web 壁纸(sandbox iframe,跨源)控制:经 postMessage 落到 shim 控制通道
+    try { layer.contentWindow.postMessage(Object.assign({ __we: 1, op: op }, extra || {}), '*'); } catch {}
+  }
 
   function applyPaused() {
     if (!layer || !current() || current().id !== mountedId) return;
@@ -267,13 +291,16 @@
       : state.occlusion === 'focus' ? (document.hidden || !document.hasFocus())
       : false;
     const paused = state.paused || occluded;
+    const kind = layerKind();
     try {
-      if (layer.tagName === 'IFRAME') {
+      if (kind === 'scene') {
         const wp = layer.contentWindow && layer.contentWindow.__wp;
         if (wp) (paused ? wp.pause() : wp.resume());
-      } else if (layer.tagName === 'VIDEO') {
+      } else if (kind === 'video') {
         if (paused) layer.pause();
         else layer.play().catch(() => {});
+      } else if (kind === 'web') {
+        shimSend('setPaused', { v: paused });
       }
     } catch {}
     $('btn-pause').textContent = state.paused ? '▶' : '⏸';
@@ -281,17 +308,19 @@
 
   function applyVolume() {
     const muted = effectiveMuted();
+    const kind = layerKind();
     try {
-      if (layer && layer.tagName === 'IFRAME') {
+      if (kind === 'scene') {
         const wp = layer.contentWindow && layer.contentWindow.__wp;
         if (wp && wp.setVolume) wp.setVolume(muted ? 0 : state.volume);
-      } else if (layer && layer.tagName === 'VIDEO') {
+      } else if (kind === 'video') {
         layer.muted = muted;
         layer.volume = Math.max(0.01, state.volume);
+      } else if (kind === 'web') {
+        shimSend('setVolume', { v: muted ? 0 : state.volume });
       }
     } catch {}
     $('btn-mute').textContent = muted ? '🔇' : '🔊';
-    // 出声切换对渲染页是初始化参数,改不动已就绪的 iframe;重建层让其生效。
   }
 
   function applyRotate() {
@@ -339,6 +368,7 @@
     lyricsBox.textContent = '';
     document.body.appendChild(lyricsBox);
   }
+  let nowPlaying = null;
   let npKey = '';
   let lrcLines = [];          // [{t:秒, text}]
   function parseLrc(lrc) {
@@ -358,11 +388,34 @@
     for (const l of lrcLines) { if (l.t <= pos + 0.2) { if (l.text) cur = l.text; } else break; }
     return cur;
   }
+  function sceneMediaWire(np) {
+    // WebWallGL setMedia wire 协议(逆向自 vendored renderer):hasMedia/title/artist/
+    // album/position/duration/playing + lyrics(渲染器按 position 自动算当前句)
+    const has = !!(np && np.available && np.title);
+    return {
+      hasMedia: has,
+      title: has ? np.title : '',
+      artist: has ? (np.artist || '') : '',
+      album: has ? (np.album || '') : '',
+      position: has ? (np.position || 0) : 0,
+      duration: has ? (np.duration || 0) : 0,
+      playing: has && np.status === 'playing',
+      lyrics: state.lyrics && lrcLines.length ? lrcLines : undefined,
+    };
+  }
+  function pushSceneMedia() {
+    if (!layer || layerKind() !== 'scene') return;
+    try {
+      const wp = layer.contentWindow && layer.contentWindow.__wp;
+      if (wp && typeof wp.setMedia === 'function') wp.setMedia(sceneMediaWire(nowPlaying));
+    } catch {}
+  }
   async function refreshNowPlaying() {
     if (!EMBED) return;
     try {
       const np = await api('/api/nowplaying');
-      if (!np || !np.available || !np.title) { if (lyricsBox) lyricsBox.textContent = ''; npKey = ''; return; }
+      nowPlaying = np;
+      if (!np || !np.available || !np.title) { if (lyricsBox) lyricsBox.textContent = ''; npKey = ''; pushSceneMedia(); return; }
       const key = np.title + '|' + np.artist;
       if (key !== npKey) {
         npKey = key;
@@ -372,6 +425,7 @@
           lrcLines = r && r.synced ? parseLrc(r.synced) : [];
         }
       }
+      pushSceneMedia();
       // 歌词行按 SMTC 时间轴位置取当前句
       if (lyricsBox) {
         if (!state.lyrics || !lrcLines.length) { lyricsBox.textContent = ''; return; }
