@@ -327,6 +327,15 @@
         fpsRow.appendChild(b);
       });
       content.appendChild(fpsRow);
+      var vfRow = el('div', 'row');
+      vfRow.appendChild(el('label', null, '视频帧率上限'));
+      [[0, '无限制'], [60, '60 fps'], [30, '30 fps']].forEach(function (p) {
+        var b = el('button', 'btn' + (Number(state.videoFpsCap || 0) === p[0] ? ' on' : ''), p[1]);
+        b.title = '源帧率高于上限的视频壁纸自动转码降帧,降低 GPU 解码占用;转码后台进行,下次切换生效';
+        b.onclick = function () { api('/api/advanced', { videoFpsCap: p[0] }).then(function (s) { state = s; render(); }); };
+        vfRow.appendChild(b);
+      });
+      content.appendChild(vfRow);
       var occRow = el('div', 'row');
       occRow.appendChild(el('label', null, '遮挡暂停'));
       [['never', '从不'], ['hidden', '切走/最小化时'], ['focus', '失焦即停']].forEach(function (p) {

@@ -315,6 +315,30 @@ function detectFfmpeg() {
   return null;
 }
 
+let ffprobePath = null;
+function detectFfprobe() {
+  if (ffprobePath !== null && ffprobePath !== undefined) return ffprobePath;
+  const ff = detectFfmpeg();
+  if (!ff) { ffprobePath = null; return null; }
+  const cand = ff.replace(/ffmpeg(\.exe)?$/i, 'ffprobe$1');
+  try { execFileSync(cand, ['-version'], { stdio: 'ignore', timeout: 5000 }); ffprobePath = cand; return cand; } catch { ffprobePath = null; return null; }
+}
+// 源视频帧率(缓存):ffprobe avg_frame_rate 解析,读不到返回 null
+const fpsProbeCache = new Map();
+function probeSourceFps(abs) {
+  if (fpsProbeCache.has(abs)) return fpsProbeCache.get(abs);
+  const fp = detectFfprobe();
+  if (!fp) { fpsProbeCache.set(abs, null); return null; }
+  try {
+    const out = execFileSync(fp, ['-v', 'quiet', '-select_streams', 'v:0', '-show_entries', 'stream=avg_frame_rate', '-of', 'json', abs], { timeout: 15000, maxBuffer: 1e6 }).toString();
+    const m = JSON.parse(out).streams && JSON.parse(out).streams[0];
+    const rate = m && m.avg_frame_rate;
+    let fps = null;
+    if (rate && /^\d+\/\d+$/.test(rate)) { const [a, b] = rate.split('/').map(Number); if (b) fps = a / b; }
+    fpsProbeCache.set(abs, fps);
+    return fps;
+  } catch { fpsProbeCache.set(abs, null); return null; }
+}
 // moov 是否已在文件头部(前 2MB 内):在 → 播放器元数据立即可得;不在 → 需要重排
 function moovAtHead(abs) {
   try {
@@ -364,6 +388,54 @@ function faststartVariant(abs, id) {
 }
 
 
+// 视频帧率上限转码:源帧率高于上限(+1 容差)才转,与容器能否原生播无关
+// (DSH v1.2.0 口径);编码优先 NVENC,失败回落 libx264;按「源+大小+mtime+上限」缓存;
+// 运行期钉住:一次播放会话中绝不中途换文件 —— 转码在后台进行,下次建层生效。
+const transcodeJobs = new Map();
+const transcodePin = new Map();   // key -> true(本运行内已决定用原片)
+function videoVariant(abs, id) {
+  const st = fs.statSync(abs);
+  if (!/\.(mp4|m4v|mov)$/i.test(abs)) return Promise.resolve(null);
+  const cap = Number(state.videoFpsCap) || 0;
+  if (!cap || !detectFfprobe()) return Promise.resolve(null);
+  const key = abs + '|' + st.size + '|' + Math.floor(st.mtimeMs) + '|' + cap;
+  if (transcodePin.has(key)) return Promise.resolve(transcodePin.get(key) ? transcodePin.get(key) : null);
+  const outDir = path.join(APP_DIR, 'cache', 'transcode');
+  const out = path.join(outDir, id + '-' + cap + '.mp4');
+  if (fs.existsSync(out) && fs.statSync(out).size > 1024) { transcodePin.set(key, out); return Promise.resolve(out); }
+  return faststartVariant(abs, id).then(function (fs0) {
+    const src = fs0 || abs;
+    const fps = probeSourceFps(src);
+    if (fps == null || fps <= cap + 1) { transcodePin.set(key, null); return null; }   // 源帧率未知或本就低于上限:不折腾
+    if (transcodeJobs.has(key)) return transcodeJobs.get(key);
+    const job = new Promise((resolve) => {
+      fs.mkdirSync(outDir, { recursive: true });
+      const tmp = out + '.part.mp4';
+      const encoders = ['h264_nvenc', 'libx264'];
+      const attempt = function (k) {
+        if (k >= encoders.length) { transcodePin.set(key, null); diagRecord('transcode-error', { id, fps: Math.round(fps) }); return resolve(null); }
+        const args = ['-y', '-i', src, '-vf', 'fps=' + cap, '-c:v', encoders[k],
+          encoders[k] === 'libx264' ? '-preset' : null, encoders[k] === 'libx264' ? 'veryfast' : null,
+          '-crf', '23', '-c:a', 'copy', '-movflags', '+faststart', '-f', 'mp4', tmp].filter(Boolean);
+        execFile(ffmpegPath || detectFfmpeg(), args, { timeout: 600000, maxBuffer: 1e6 }, (err) => {
+          try {
+            if (err || !fs.existsSync(tmp) || fs.statSync(tmp).size < 1024) {
+              if (!err || !String(err).includes('h264_nvenc')) diagRecord('transcode-attempt', { id, encoder: encoders[k], error: String(err && err.message || err).slice(0, 160) });
+              return attempt(k + 1);   // NVENC 失败(无 N 卡等)回落 libx264
+            }
+            fs.renameSync(tmp, out);
+            diagRecord('transcode-ok', { id, encoder: encoders[k], fps: Math.round(fps), cap, bytes: fs.statSync(out).size });
+            transcodePin.set(key, out);
+            resolve(out);
+          } catch (e2) { transcodePin.set(key, null); resolve(null); }
+        });
+      };
+      attempt(0);
+    });
+    transcodeJobs.set(key, job);
+    return job;
+  });
+}
 // ── HTTP 基础设施 ─────────────────────────────────────────────────────────────
 const diagEntries = [];
 const sceneProgress = new Map();
@@ -604,6 +676,7 @@ const server = http.createServer(async (req, res) => {
       if (body.occlusion != null && ['never', 'hidden', 'focus'].includes(body.occlusion)) state.occlusion = body.occlusion;
       if (body.sceneFps != null) state.sceneFps = [15, 30, 60].includes(Number(body.sceneFps)) ? Number(body.sceneFps) : state.sceneFps;
       if (body.lyrics != null) state.lyrics = !!body.lyrics;
+      if (body.videoFpsCap != null) state.videoFpsCap = [0, 15, 30, 60].includes(Number(body.videoFpsCap)) ? Number(body.videoFpsCap) : state.videoFpsCap;
       if (body.contentFilter != null) state.contentFilter = !!body.contentFilter;
       saveState();
       return sendJSON(res, 200, state);
@@ -912,8 +985,10 @@ html, body { background: #101216 !important; }
       if (/\.(mp4|m4v|mov)$/i.test(abs)) {
         // moov 在尾部的视频会迫使浏览器整读文件才拿到元数据(DSH 根因修复):
         // 一次性无损重排(faststart),变体缓存后与文件大小解耦;失败回原片
-        const variant = await faststartVariant(abs, id);
-        if (variant) abs = variant;
+        const fsv = await faststartVariant(abs, id);          // ① moov 前置(无损)
+        const base2 = fsv || abs;
+        const tv = await videoVariant(base2, id);             // ② 帧率上限转码(对 faststart 变体亦可)
+        if (tv) abs = tv; else if (fsv) abs = fsv;
       }
       return serveFile(abs, req, res, { cache: 'public, max-age=3600' });
     }
