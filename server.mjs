@@ -62,6 +62,7 @@ try {
 } catch {}
 state = sanitizeState(state);
 let luminance = null;   // 播放器实测壁纸亮度 0..1(内存态,不落盘)
+let stateVersion = 0;   // 状态版本号:每次落盘 +1,供客户端低成本轮询"外观是否变了"
 let nowPlaying = null;  // Windows Now Playing(SMTC via PowerShell,内存态)
 const lyricsCache = new Map();
 
@@ -88,7 +89,12 @@ function startNowPlayingPoller() {
   } catch {}
 }
 const saveState = () => {
-  try { state = sanitizeState(state); fs.mkdirSync(APP_DIR, { recursive: true }); fs.writeFileSync(STATE_FILE, JSON.stringify(state, null, 2)); } catch {}
+  try {
+    state = sanitizeState(state);
+    stateVersion += 1;   // 任何外观/状态写入都推进版本,宿主据此立即刷新样式
+    fs.mkdirSync(APP_DIR, { recursive: true });
+    fs.writeFileSync(STATE_FILE, JSON.stringify(state, null, 2));
+  } catch {}
 };
 
 // ── 壁纸扫描(参考 dsh-wallpaper-engine 的 Steam 库定位逻辑)──────────────────
@@ -505,6 +511,8 @@ const server = http.createServer(async (req, res) => {
       });
     }
     if (p === '/api/state') return sendJSON(res, 200, { ...state, luminance });
+    // 极轻量的版本探针:客户端高频轮询它,变了才去取整份 /embed.css(降低换色的等待)
+    if (p === '/api/version') return sendJSON(res, 200, { v: stateVersion });
     if (p === '/api/diag-log') return sendJSON(res, 200, { entries: diagEntries.slice(-80) });
     if (p === '/api/scene-progress') {
       const token = String(u.searchParams.get('token') || '');

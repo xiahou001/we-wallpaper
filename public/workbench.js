@@ -10,10 +10,19 @@
   var scanStatus = '';              // "重新扫描"的结果提示,跨 render 保留
   var content = document.getElementById('content');
 
+  // 通知宿主(ZCode 页面):外观变了,立刻重取样式。比等轮询快得多(通常 <50ms)。
+  function notifyAppearance() {
+    try { if (window.parent && window.parent !== window) window.parent.postMessage('we-wp-appearance', '*'); } catch (e) {}
+  }
   function api(path, body) {
     return fetch(BASE + path, body !== undefined ? {
       method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body),
-    } : undefined).then(function (r) { return r.json(); });
+    } : undefined).then(function (r) {
+      return r.json();
+    }).then(function (data) {
+      if (body !== undefined) notifyAppearance();   // 任何状态写入都让宿主立即刷新样式
+      return data;
+    });
   }
   function el(tag, cls, text) {
     var e = document.createElement(tag);

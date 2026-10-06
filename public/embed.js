@@ -29,6 +29,25 @@
       .catch(function () {});
   }
 
+  // 版本探针:只取一个数字,比整份 CSS 便宜得多。
+  // 用来把"在工作台换颜色"的等待从 5 秒压到 ~0.4 秒(工作台还会直接推消息,见下)。
+  var lastVersion = -1;
+  var versionBusy = false;
+  function pollVersion() {
+    if (versionBusy) return;
+    versionBusy = true;
+    fetch(BASE + '/api/version', { cache: 'no-store' })
+      .then(function (r) { return r.json(); })
+      .then(function (d) {
+        var v = d && d.v;
+        var changed = lastVersion !== -1 && v !== lastVersion;
+        lastVersion = v;
+        if (changed) refreshCss();
+      })
+      .catch(function () {})
+      .then(function () { versionBusy = false; });
+  }
+
   // ── 壁纸 iframe ────────────────────────────────────────────
   var frame = null;
   var frameLoaded = false;
@@ -91,6 +110,8 @@
   }
 
   window.addEventListener('message', function (event) {
+    // 工作台改了外观 → 直接推消息,立即重取样式(无需等轮询)
+    if (event.data === 'we-wp-appearance') { refreshCss(); return; }
     if (!frame || event.source !== frame.contentWindow || event.origin !== BASE) return;
     if (event.data && event.data.source === 'we-wallpaper' && event.data.type === 'ready') {
       frameReady = true;
@@ -234,7 +255,8 @@
   function onReady() {
     mount();
     refreshCss();
-    setInterval(refreshCss, 5000);
+    setInterval(pollVersion, 400);            // 快路径:版本变了立刻应用(~0.4s)
+    setInterval(refreshCss, 15000);           // 兜底:直接改服务器上 embed.css 时也能生效
     diag();
     setInterval(diag, 60000);
     // 一次性 DOM 抓取:从"输入框所在的屏幕位置"反查元素链,用于精确定位遮挡壁纸的容器
