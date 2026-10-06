@@ -696,6 +696,14 @@ html, body { background: #101216 !important; }
   --color-sidebar: ${glassDark(sideBase, a.sidebar)} !important;
 }
 .dark { --color-surface: ${glassDark(lightWall ? '#1b1e24' : '#ffffff', Math.round(a.row / 5))} !important; }
+/* 聊天输入框:DSH 式磨砂玻璃(backdrop 采样壁纸层) */
+.chat-composer-region .bg-surface {
+  background: ${glassDark(lightWall ? '#f2f3f5' : '#14161c', Math.max(38, a.row))} !important;
+  backdrop-filter: blur(22px) saturate(1.4) !important;
+  -webkit-backdrop-filter: blur(22px) saturate(1.4) !important;
+  border: 1px solid ${lightWall ? 'rgba(0,0,0,.14)' : 'rgba(255,255,255,.16)'} !important;
+  box-shadow: 0 8px 32px rgba(0,0,0,.25) !important;
+}
 `;
       res.writeHead(200, {
         'Content-Type': 'text/css; charset=utf-8',
