@@ -20,6 +20,7 @@
   let state = { currentId: null, paused: false, volume: 1, rotate: { enabled: false, intervalMin: 30 } };
   let mountedId = null;
   let mountedKind = null;    // scene|video|image|web
+  let onLayerReady = null;   // 帧门控回调:新层首帧就绪时由挂载函数调用
   let layer = null;          // 当前层元素(iframe / video / img)
   let hudTimer = 0;
   let sawGesture = false;    // 首次用户手势后允许出声
@@ -42,6 +43,7 @@
     clearTimeout(recoveryTimer);
     clearInterval(sceneWatchdog);
     webPointerTarget = null;
+    onLayerReady = null;
     if (!layer) return;
     try { layer.src = 'about:blank'; } catch {}
     layer.remove();
@@ -74,7 +76,7 @@
       const v = document.createElement('video');
       v.loop = true; v.muted = effectiveMuted(); v.autoplay = true; v.playsInline = true;
       v.src = '/scene-video/' + encodeURIComponent(w.id); v.className = 'layer-enter';
-      v.addEventListener('loadeddata', () => { recoveryAttempts = 0; v.classList.add('layer-on'); });
+      v.addEventListener('loadeddata', () => { recoveryAttempts = 0; v.classList.add('layer-on'); const cb = onLayerReady; onLayerReady = null; if (cb) cb(); });
       v.addEventListener('error', () => { unmount(); if (w.preview) { mountFallback(w); $('hud-title').textContent = w.title + '（预览图）'; } });
       stage.appendChild(v); layer = v; mountedId = w.id; v.play().catch(() => {});
       $('hud-title').textContent = w.title + '（视频降级）';
@@ -98,9 +100,8 @@
       + '&mediaBase=' + encodeURIComponent(location.origin + '/scene-files');
     iframe.src = src;
     iframe.className = 'layer-enter';
-    iframe.addEventListener('load', () => {
-      requestAnimationFrame(() => iframe.classList.add('layer-on'));
-    });
+    // 注意:iframe load ≠ 首帧。上屏交给看护(fps>0 时调 onLayerReady),
+    // pkg 下载期间用户看的还是旧壁纸 —— 绝不提前淡入空层。
     iframe.addEventListener('error', () => wallpaperFailed(w, 'scene-iframe-error'));
     stage.appendChild(iframe);
     layer = iframe;
@@ -119,6 +120,8 @@
         if (win && win.__wp && frame && frame.running && frame.fps > 0) {
           clearInterval(sceneWatchdog);
           recoveryAttempts = 0;
+          const cb = onLayerReady; onLayerReady = null;
+          if (cb) cb();              // 首帧就绪:淡出旧壁纸,淡入场景
           pushSceneMedia();          // 就绪即推送 Now Playing(媒体响应型壁纸)
           return;                    // 正常渲染中
         }
@@ -150,7 +153,7 @@
     v.className = 'layer-enter';
     v.addEventListener('loadeddata', () => {
       recoveryAttempts = 0;
-      requestAnimationFrame(() => v.classList.add('layer-on'));
+      if (onLayerReady) { onLayerReady(); onLayerReady = null; }   // 首帧就绪才上屏
     });
     v.addEventListener('error', () => wallpaperFailed(w, 'video-error'));
     v.addEventListener('stalled', () => {
@@ -162,7 +165,7 @@
     stage.appendChild(v);
     layer = v;
     v.play().catch(() => {});
-    requestAnimationFrame(() => v.classList.add('layer-on'));
+    // 帧门控:loadeddata(首帧)时由 onLayerReady 上屏,这里不再立即淡入
     mountedId = w.id;
   }
 
@@ -170,6 +173,7 @@
     const img = document.createElement('img');
     img.src = w.mediaUrl;
     img.className = 'layer-enter';
+    img.addEventListener('load', () => { const cb = onLayerReady; onLayerReady = null; if (cb) cb(); });
     stage.appendChild(img);
     layer = img;
     mountedId = w.id;
@@ -186,11 +190,13 @@
     stage.appendChild(iframe);
     layer = iframe;
     mountedId = w.id;
-    requestAnimationFrame(() => iframe.classList.add('layer-on'));
     // 指针转发:iframe 是 pointer-events:none,作者脚本的鼠标交互经 postMessage 还原
     webPointerTarget = iframe;
-    // 帧率上限同样对 web 壁纸生效(shim 的 rAF 节流)
+    // 帧门控:iframe load(文档就绪)即上屏 —— web 壁纸加载快,无整包下载问题
     iframe.addEventListener('load', () => {
+      const cb = onLayerReady; onLayerReady = null;
+      if (cb) cb();
+      requestAnimationFrame(() => iframe.classList.add('layer-on'));
       try { iframe.contentWindow.postMessage({ __we: 1, op: 'setFps', n: state.sceneFps || 30 }, '*'); } catch {}
       applyPaused();   // 挂载后立刻同步暂停态(加载前 postMessage 会被丢)
     });
@@ -225,6 +231,8 @@
     stage.appendChild(img);
     layer = img;
     mountedId = w.id;
+    const cb = onLayerReady; onLayerReady = null;
+    if (cb) cb();
   }
 
   function mountCurrent() {
@@ -241,10 +249,15 @@
     suppressRecoveryReset = false;
     clearTimeout(recoveryTimer);
     const ms = state.transition ? (state.transition.ms || 0) : 0;
-    // 旧层淡出(交叉淡化:新旧层叠放,旧的盖不住新的)
-    if (layer) {
-      const old = layer;
-      layer = null;
+    // 帧门控(DSH「没画面就不上屏」):旧层先留着,新层首帧就绪才交叉淡化;
+    // 各挂载函数在首帧/载荷就绪时调用 onLayerReady()。视频元数据没到/场景包
+    // 没下载完之前,用户看的一直是旧壁纸 —— 绝不铺纯色。
+    const old = layer;
+    layer = null;
+    let oldGone = false;
+    const dismissOld = () => {
+      if (oldGone || !old) return;
+      oldGone = true;
       if (ms > 0) {
         old.style.transition = 'opacity ' + ms + 'ms ease';
         old.style.opacity = '0';
@@ -252,7 +265,26 @@
       } else {
         old.remove();
       }
-    }
+    };
+    onLayerReady = () => {
+      if (oldGone) {
+        if (layer) { layer.style.zIndex = '1'; layer.style.opacity = '1'; }
+        return;
+      }
+      dismissOld();
+      if (layer) {
+        layer.style.zIndex = '1';
+        if (ms > 0) {
+          layer.style.transition = 'opacity ' + ms + 'ms ease';
+          layer.style.opacity = '0';
+          requestAnimationFrame(() => { if (layer) layer.style.opacity = '1'; });
+        } else {
+          layer.style.opacity = '1';
+        }
+      }
+      applyPaused();
+      pushSceneMedia();
+    };
     $('hud-title').textContent = w.title;
     document.title = w.title + ' · 动态壁纸';
     if (w.playable && w.type === 'scene') mountScene(w);
@@ -260,14 +292,7 @@
     else if (w.playable && w.type === 'image') mountImage(w);
     else if (w.playable && w.type === 'web' && w.webEntry) mountWeb(w);
     else mountFallback(w);
-    if (layer) {
-      layer.style.zIndex = '1';                 // 新层压住淡出中的旧层
-      if (ms > 0) {
-        layer.style.transition = 'opacity ' + ms + 'ms ease';
-        layer.style.opacity = '0';
-        requestAnimationFrame(() => { if (layer) layer.style.opacity = '1'; });
-      }
-    }
+    if (layer) layer.style.zIndex = '1';
     applyPaused();
   }
 

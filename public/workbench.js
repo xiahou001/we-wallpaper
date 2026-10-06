@@ -21,6 +21,16 @@
     if (text != null) e.textContent = text;
     return e;
   }
+  // 悬停预取:提前触发服务端的 faststart 重排与元数据 Range 请求,
+  // 点击播放时首帧立即可得(单槽 + 60s TTL,避免重复预热)
+  var preheatSlot = null, preheatAt = 0;
+  function preheat(w) {
+    if (!w || !w.mediaUrl) return;
+    var now = Date.now();
+    if (preheatSlot === w.id && now - preheatAt < 60000) return;
+    preheatSlot = w.id; preheatAt = now;
+    fetch(BASE + w.mediaUrl, { headers: { Range: 'bytes=0-65535' }, cache: 'no-store' }).catch(function () {});
+  }
     var typeLabel = function (w) { return w.type === 'scene' ? '场景' : w.type === 'video' ? '视频' : w.type === 'image' ? '图片' : w.type === 'web' ? '网页' : w.type; };
   var cur = function () { return wallpapers.find(function (w) { return state && w.id === state.currentId; }) || null; };
 
@@ -110,7 +120,7 @@
     var grid = el('div', 'grid');
     wallpapers.forEach(function (wp) {
       var card = el('div', 'card' + (state.currentId === wp.id ? ' current' : '') + (wp.playable ? '' : ' dead'));
-      if (wp.playable) card.onclick = function () { api('/api/select', { id: wp.id }).then(function (s) { state = s; render(); }); };
+      if (wp.playable) { card.onclick = function () { api('/api/select', { id: wp.id }).then(function (s) { state = s; render(); }); }; card.onpointerenter = function () { preheat(wp); }; }
       var img = el('img', 'thumb'); img.loading = 'lazy'; img.src = wp.preview || '';
       var name = el('div', 'name', wp.title);
       name.appendChild(el('span', 'badge', typeLabel(wp)));
