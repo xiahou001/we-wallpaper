@@ -4,7 +4,7 @@ export const DEFAULTS = {
   currentId: null, paused: false, volume: 1,
   rotate: { enabled: false, intervalMin: 30, playlist: null },
   transition: { kind: 'crossfade', ms: 1800 },
-  appearance: { main: 0, row: 52, sidebar: 55, brightness: 100, stroke: 35, zoom: 100 },
+  appearance: { main: 0, row: 52, sidebar: 55, brightness: 100, stroke: 35, zoom: 100, blur: 22, glass: 50, glassColor: '#14161c' },
   readability: { auto: true }, occlusion: 'hidden', sceneFps: 30, playlists: [], workshopDirs: [],
   lyrics: false,        // 在线歌词跑马灯(默认关闭,与 DSH 一致)
   contentFilter: false, // 内容分级过滤:隐藏 R 级壁纸(DSH 功能)
@@ -24,6 +24,12 @@ export function sanitizeState(input = {}) {
   for (const k of ['main','row','sidebar','stroke']) s.appearance[k] = num(s.appearance[k], 0, 100, DEFAULTS.appearance[k]);
   s.appearance.brightness = num(s.appearance.brightness, 40, 160, 100);
   s.appearance.zoom = num(s.appearance.zoom, 80, 140, 100);
+  s.appearance.blur = num(s.appearance.blur, 0, 40, DEFAULTS.appearance.blur);   // 聊天框磨砂强度(px)
+  s.appearance.glass = num(s.appearance.glass, 0, 100, DEFAULTS.appearance.glass);   // 聊天框玻璃透明度(0=实心 100=最透)
+  // 聊天框玻璃颜色:只接受 #rrggbb,非法值回落到默认深空黑
+  s.appearance.glassColor = /^#[0-9a-f]{6}$/i.test(String(s.appearance.glassColor || ''))
+    ? String(s.appearance.glassColor).toLowerCase()
+    : DEFAULTS.appearance.glassColor;
   s.readability = { auto: input.readability?.auto !== false };
   s.occlusion = ['never','hidden','focus'].includes(input.occlusion) ? input.occlusion : 'hidden';
   s.sceneFps = [15,30,60].includes(Number(input.sceneFps)) ? Number(input.sceneFps) : 30;

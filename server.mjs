@@ -571,6 +571,11 @@ const server = http.createServer(async (req, res) => {
       }
       if (body.brightness != null) state.appearance.brightness = Math.max(40, Math.min(160, Number(body.brightness)));
       if (body.zoom != null) state.appearance.zoom = Math.max(80, Math.min(140, Number(body.zoom)));
+      if (body.blur != null) state.appearance.blur = Math.max(0, Math.min(40, Number(body.blur)));
+      if (body.glass != null) state.appearance.glass = Math.max(0, Math.min(100, Number(body.glass)));
+      if (body.glassColor != null && /^#[0-9a-f]{6}$/i.test(String(body.glassColor))) {
+        state.appearance.glassColor = String(body.glassColor).toLowerCase();
+      }
       saveState();
       return sendJSON(res, 200, state);
     }
@@ -677,11 +682,22 @@ const server = http.createServer(async (req, res) => {
       const rowBase = lightWall ? '#ffffff' : '#14161c';
       const mainBase = lightWall ? '#ffffff' : '#14161c';
       const sideBase = lightWall ? '#f2f3f5' : '#0c0e12';
+      const lightBase = lightWall ? '#f2f3f5' : '#14161c';
       const fg = lightWall ? '#1b1e24' : '#eef1f6';
+      // 聊天框玻璃颜色(工作台"玻璃颜色"色板):由用户选择,按亮度自动决定框内文字深浅
+      const hexLum = (hex) => {
+        const m = /^#?([0-9a-f]{6})$/i.exec(String(hex || ''));
+        if (!m) return 0.08;
+        const n = parseInt(m[1], 16);
+        return (0.2126 * ((n >> 16) & 255) + 0.7152 * ((n >> 8) & 255) + 0.0722 * (n & 255)) / 255;
+      };
+      const glassBase = a.glassColor || lightBase;
+      const glassLight = hexLum(glassBase) > 0.55;              // 玻璃本身偏亮?
+      const glassFg = glassLight ? '#1b1e24' : '#eef1f6';
       const shadow = Math.round(a.stroke * 0.5) / 100;
       const css = `
 html, body { background: #101216 !important; }
-#root { position: relative; z-index: 1; zoom: ${a.zoom}%; text-shadow: 0 1px 2px rgba(0,0,0,${(shadow * 0.7).toFixed(2)}), 0 0 ${(Math.max(2, Math.round(a.stroke / 10)))}px rgba(0,0,0,${(shadow * 0.45).toFixed(2)}); }
+#root { position: relative; z-index: 1; ${a.zoom === 100 ? '' : `zoom: ${a.zoom}%; `}text-shadow: 0 1px 2px rgba(0,0,0,${(shadow * 0.7).toFixed(2)}), 0 0 ${(Math.max(2, Math.round(a.stroke / 10)))}px rgba(0,0,0,${(shadow * 0.45).toFixed(2)}); }
 #we-wp-layer { position: fixed; inset: 0; width: 100%; height: 100%; border: 0; z-index: 0; pointer-events: none; filter: brightness(${a.brightness}%) saturate(1.08); }
 /* 文字主题跟随壁纸亮度(智能可读性) */
 :root:not(.dark), .dark {
@@ -694,16 +710,64 @@ html, body { background: #101216 !important; }
   --color-background-alt: ${glassDark(rowBase, a.row)} !important;
   --color-panel: ${glassDark(rowBase, a.row + 4)} !important;
   --color-sidebar: ${glassDark(sideBase, a.sidebar)} !important;
+  /* 全局输入底色也跟着玻璃化(设置页/搜索框),与聊天框风格一致 */
+  --color-input: ${glassDark(glassBase, 62)} !important;
+  --color-input-border: ${glassLight ? 'rgba(0,0,0,.14)' : 'rgba(255,255,255,.18)'} !important;
 }
 .dark { --color-surface: ${glassDark(lightWall ? '#1b1e24' : '#ffffff', Math.round(a.row / 5))} !important; }
-/* 聊天输入框:DSH 式磨砂玻璃(backdrop 采样壁纸层) */
-.chat-composer-region .bg-surface {
-  background: ${glassDark(lightWall ? '#f2f3f5' : '#14161c', Math.max(38, a.row))} !important;
-  backdrop-filter: blur(22px) saturate(1.4) !important;
-  -webkit-backdrop-filter: blur(22px) saturate(1.4) !important;
-  border: 1px solid ${lightWall ? 'rgba(0,0,0,.14)' : 'rgba(255,255,255,.16)'} !important;
-  box-shadow: 0 8px 32px rgba(0,0,0,.25) !important;
+/* 聊天输入框:磨砂玻璃。
+   DOM 实证(embed.js 的输入框抓取探针上报的真实元素链):
+     .chat-composer-input-surface              ← 外层(785x107),应保持透明
+       └ form.relative.p-0
+           └ div.rounded-2xl.border.bg-input   ← 屏幕上看到的那个盒子
+   它的底色来自 Tailwind 的 bg-input(= rgb(43,43,43) 不透明),
+   所以玻璃必须做在 .bg-input 这一层;只改外层不会有任何可见变化。 */
+
+/* 1) 输入框整条祖先链都不许画背景/渐变:任何不透明祖先都会把壁纸挡死。 */
+[data-testid="v4-composer"],
+[data-testid="v4-composer"] *:has(.chat-composer-input-surface),
+.chat-composer-region *:has(.chat-composer-input-surface),
+[data-v4-composer-dock="true"],
+[data-v4-composer-dock="true"] > *,
+.chat-composer-input-surface {
+  background-color: transparent !important;
+  background-image: none !important;
 }
+
+/* 2) 输入框本体(真正的可见盒子):磨砂玻璃,直接采样身后的壁纸层。
+      玻璃颜色来自工作台"玻璃颜色"色板(默认深空黑),透明度来自"聊天框玻璃透明度"。 */
+.chat-composer-input-surface form [class~="bg-input"],
+.chat-composer-input-surface form > div {
+  backdrop-filter: blur(${a.blur}px) saturate(${(1.25 + a.blur / 80).toFixed(2)}) !important;
+  -webkit-backdrop-filter: blur(${a.blur}px) saturate(${(1.25 + a.blur / 80).toFixed(2)}) !important;
+  /* glass 0..100 线性映射到玻璃 alpha 96%..8%:整个滑杆区间都有效果,
+     默认 50 → 52%;极端值保留最低不透明度,避免文字完全不可读。 */
+  background-color: ${glassDark(glassBase, Math.max(8, Math.min(96, Math.round(96 - 0.88 * a.glass))))} !important;
+  border-color: ${glassLight ? "rgba(0,0,0,.14)" : "rgba(255,255,255,.18)"} !important;
+  border-radius: 16px !important;
+  /* 玻璃光泽层:即使祖先阻断 backdrop 采样,也能保住磨砂材质的层次感 */
+  background-image: linear-gradient(180deg, ${glassLight ? 'rgba(255,255,255,.55)' : 'rgba(255,255,255,.09)'}, rgba(255,255,255,0) 58%),
+    radial-gradient(120% 100% at 50% 0%, ${glassLight ? 'rgba(255,255,255,.45)' : 'rgba(255,255,255,.06)'}, transparent 62%) !important;
+  box-shadow: 0 10px 34px rgba(0,0,0,.28), inset 0 1px 0 ${glassLight ? 'rgba(255,255,255,.6)' : 'rgba(255,255,255,.1)'} !important;
+}
+
+/* 框内文字/图标跟着玻璃颜色走:选浅色玻璃时自动用深色文字,保证对比度。
+   只作用于输入框子树,不影响消息区(那里直接坐在壁纸上,仍按壁纸亮度决定)。 */
+.chat-composer-input-surface form {
+  --color-foreground: ${glassFg} !important;
+  --color-foreground-subtle: ${glassFg}b8 !important;
+  --color-foreground-subtlest: ${glassFg}80 !important;
+  --color-input: ${glassDark(glassBase, Math.max(8, Math.min(96, Math.round(96 - 0.88 * a.glass))))} !important;
+  --color-input-border: ${glassLight ? "rgba(0,0,0,.14)" : "rgba(255,255,255,.18)"} !important;
+}
+
+/* 3) ZCode 给输入区外层套了 will-change:transform 的过渡层,它会建立 backdrop 采样根,
+      导致 backdrop-filter 只能采到该层内部(空的)而看不到壁纸。
+      只去掉这个图层提示,不碰 transform 本身,所以过渡动画不受影响。 */
+[data-testid="conversation-bottom-dock-transition-layer"] {
+  will-change: auto !important;
+}
+
 `;
       res.writeHead(200, {
         'Content-Type': 'text/css; charset=utf-8',

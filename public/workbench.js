@@ -162,6 +162,32 @@
       content.appendChild(el('div', 'sec', '壁纸与界面'));
       slider(content, '壁纸亮度', state.appearance.brightness, 50, 160, function (v) { state.appearance.brightness = v; api('/api/appearance', { brightness: v }); });
       slider(content, '界面缩放', state.appearance.zoom, 80, 140, function (v) { state.appearance.zoom = v; api('/api/appearance', { zoom: v }); });
+      slider(content, '聊天框磨砂(blur)', state.appearance.blur, 0, 40, function (v) { state.appearance.blur = v; api('/api/appearance', { blur: v }); });
+      // 聊天框玻璃颜色:与 ZCode 的 Wallpaper Engine 设置页同一形式(色板 + 自定义取色)
+      var swRow = el('div', 'row');
+      swRow.appendChild(el('label', null, '聊天框玻璃颜色'));
+      var GLASS_PALETTE = ['#14161c', '#000000', '#2ec5d3', '#e79bb0', '#f0a04b', '#e8615a', '#f2f3f5', '#8ecf5a'];
+      var curGlass = state.appearance.glassColor || '#14161c';
+      GLASS_PALETTE.forEach(function (c) {
+        var b = document.createElement('button');
+        b.title = c;
+        b.style.cssText = 'width:26px;height:26px;border-radius:50%;padding:0;cursor:pointer;background:' + c
+          + ';border:2px solid ' + (curGlass === c ? '#f2f3f5' : 'rgba(255,255,255,.22)') + ';';
+        b.onclick = function () { api('/api/appearance', { glassColor: c }).then(function (s) { state = s; render(); }); };
+        swRow.appendChild(b);
+      });
+      var customColor = document.createElement('input');
+      customColor.type = 'color';
+      customColor.value = curGlass;
+      customColor.title = '自定义玻璃颜色';
+      customColor.style.cssText = 'width:34px;height:26px;padding:0;border:0;background:transparent;cursor:pointer;';
+      customColor.oninput = function () { state.appearance.glassColor = customColor.value; api('/api/appearance', { glassColor: customColor.value }); };
+      customColor.onchange = function () { api('/api/appearance', { glassColor: customColor.value }).then(function (s) { state = s; render(); }); };
+      swRow.appendChild(customColor);
+      content.appendChild(swRow);
+      content.appendChild(el('div', 'muted', '当前玻璃颜色 ' + curGlass + ';浅色玻璃会自动切换成深色文字。'));
+      slider(content, '聊天框玻璃透明度', state.appearance.glass, 0, 100, function (v) { state.appearance.glass = v; api('/api/appearance', { glass: v }); });
+      content.appendChild(el('div', 'muted', '玻璃透明度:0 = 完全实心,100 = 最透(最能看清壁纸)。改动约 5 秒内自动应用,不需要重启 ZCode。'));
 
       content.appendChild(el('div', 'sec', '快速预设'));
       var presets = el('div', 'row');

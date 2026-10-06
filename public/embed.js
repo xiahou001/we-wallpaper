@@ -98,6 +98,37 @@
     }
   });
 
+  // ── DOM 抓取:找出输入框位置上的元素链,以及谁在画不透明背景 ──────────
+  function dumpComposerRegion() {
+    try {
+      var y = Math.round(innerHeight * 0.925);
+      var el = document.elementFromPoint(Math.round(innerWidth / 2), y);
+      if (!el) return;
+      var chain = [];
+      for (var i = 0; el && i < 16; i++, el = el.parentElement) {
+        var cs = getComputedStyle(el);
+        var r = el.getBoundingClientRect();
+        chain.push({
+          tag: el.tagName.toLowerCase(),
+          cls: String(el.className || '').slice(0, 130),
+          testid: el.getAttribute ? el.getAttribute('data-testid') : null,
+          bg: cs.backgroundColor,
+          bgImg: cs.backgroundImage && cs.backgroundImage !== 'none' ? cs.backgroundImage.slice(0, 80) : null,
+          bd: cs.backdropFilter && cs.backdropFilter !== 'none' ? cs.backdropFilter : null,
+          filter: cs.filter && cs.filter !== 'none' ? cs.filter : null,
+          opacity: cs.opacity !== '1' ? cs.opacity : null,
+          transform: cs.transform && cs.transform !== 'none' ? cs.transform.slice(0, 36) : null,
+          radius: cs.borderTopLeftRadius,
+          rect: Math.round(r.width) + 'x' + Math.round(r.height),
+        });
+      }
+      fetch(BASE + '/api/client-diag', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ event: 'composer-dom', vy: y, top: chain[0] && chain[0].tag, chain: chain }),
+      }).catch(function () {});
+    } catch (e) {}
+  }
+
   // ── 诊断上报 ───────────────────────────────────────────────
   function diag() {
     try {
@@ -109,8 +140,57 @@
         iframeDisplay: f ? getComputedStyle(f).display : null,
         iframeRect: f ? (function (r) { return Math.round(r.width) + 'x' + Math.round(r.height); })(f.getBoundingClientRect()) : null,
         bigSurfaces: [],
+        bottomSurfaces: (function () {
+          try {
+            var out = [];
+            var els = document.body ? document.body.querySelectorAll("*") : [];
+            for (var i = 0; i < els.length && out.length < 14; i++) {
+              var el = els[i];
+              var r = el.getBoundingClientRect();
+              if (r.width < innerWidth * 0.35 || r.height < 50 || r.height > innerHeight * 0.45) continue;
+              if (r.top < innerHeight * 0.5) continue;
+              var cs = getComputedStyle(el);
+              if (cs.display === "none" || cs.visibility === "hidden") continue;
+              var bg = cs.backgroundColor;
+              if (!bg || bg === "rgba(0, 0, 0, 0)" || bg === "transparent") continue;
+              var chain = [];
+              var p = el;
+              for (var k = 0; k < 3 && p; k++) { chain.push(String(p.className || p.tagName).slice(0, 90)); p = p.parentElement; }
+              out.push({ tag: el.tagName.toLowerCase(), bg: bg, rect: Math.round(r.x) + "," + Math.round(r.y) + " " + Math.round(r.width) + "x" + Math.round(r.height), chain: chain });
+            }
+            return out;
+          } catch (e) { return { err: String(e).slice(0, 80) }; }
+        })(),
         slots: [],
       };
+      // 磨砂玻璃探针:报告输入框 computed 样式,并找出会阻断 backdrop-filter 的祖先
+      info.composer = (function () {
+        try {
+          var surf = document.querySelector('.chat-composer-input-surface');
+          var hasInput = !!document.querySelector('[data-testid="chat-input"]');
+          if (!surf) return { exists: false, hasRegion: !!document.querySelector('.chat-composer-region'), hasInput: hasInput };
+          var cs = getComputedStyle(surf);
+          var blockers = [];
+          for (var el = surf.parentElement; el && el !== document.documentElement; el = el.parentElement) {
+            var s2 = getComputedStyle(el);
+            var why = [];
+            if (s2.transform && s2.transform !== 'none') why.push('transform');
+            if (s2.filter && s2.filter !== 'none') why.push('filter');
+            if (s2.backdropFilter && s2.backdropFilter !== 'none') why.push('backdrop-filter');
+            if (s2.opacity && s2.opacity !== '1') why.push('opacity=' + s2.opacity);
+            if (s2.willChange && /transform|filter|opacity/.test(s2.willChange)) why.push('will-change:' + s2.willChange);
+            if (s2.contain && s2.contain !== 'none') why.push('contain:' + s2.contain);
+            if (why.length) blockers.push({ tag: el.tagName.toLowerCase(), cls: String(el.className || '').slice(0, 70), why: why.join('+') });
+          }
+          return {
+            exists: true, hasInput: hasInput,
+            bg: cs.backgroundColor,
+            backdrop: cs.backdropFilter || cs.webkitBackdropFilter,
+            border: cs.borderTopWidth + ' ' + cs.borderTopColor,
+            blockers: blockers.slice(0, 8),
+          };
+        } catch (e) { return { err: String(e).slice(0, 90) }; }
+      })();
       // 大面积表面(≥30% 视口,含 fixed 遮罩)
       var els = document.body ? document.body.querySelectorAll('*') : [];
       for (var i = 0, n = 0; i < els.length && n < 20; i++) {
@@ -157,6 +237,10 @@
     setInterval(refreshCss, 5000);
     diag();
     setInterval(diag, 60000);
+    // 一次性 DOM 抓取:从"输入框所在的屏幕位置"反查元素链,用于精确定位遮挡壁纸的容器
+    setTimeout(dumpComposerRegion, 4000);
+    setTimeout(dumpComposerRegion, 15000);
+    setTimeout(dumpComposerRegion, 45000);   // 覆盖样式热更新之后的状态
     // 壁纸面板/工作台入口:仅聊天窗口(file:// 宿主)加载;
     // 播放页自身(127.0.0.1:7396/?embed=1)不加载,否则壁纸 iframe 里会再长一个按钮
     if (location.origin !== BASE) {
