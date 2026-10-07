@@ -271,19 +271,11 @@
         if (layer) { layer.style.zIndex = '1'; layer.style.opacity = '1'; }
         return;
       }
-      dismissOld();
-      if (layer) {
-        layer.style.zIndex = '1';
-        if (ms > 0) {
-          layer.style.transition = 'opacity ' + ms + 'ms ease';
-          layer.style.opacity = '0';
-          requestAnimationFrame(() => { if (layer) layer.style.opacity = '1'; });
-        } else {
-          layer.style.opacity = '1';
-        }
-      }
+      runTransition(ms, dismissOld);
       applyPaused();
       pushSceneMedia();
+      propsKey = "";
+      applyProps();
     };
     $('hud-title').textContent = w.title;
     document.title = w.title + ' · 动态壁纸';
@@ -294,6 +286,64 @@
     else mountFallback(w);
     if (layer) layer.style.zIndex = '1';
     applyPaused();
+  }
+
+  // ── 七种过场动画(源自 dsh-wallpaper-engine;type/时长走白名单)──
+  function runTransition(ms, dismissOld) {
+    const tr = state.transition || {};
+    const kind = ms > 0 ? (tr.kind || "crossfade") : "none";
+    const newL = layer;
+    if (!newL) return;
+    const ease = "cubic-bezier(.4,0,.2,1)";
+    const finish = () => { dismissOld(); newL.style.zIndex = "1"; newL.style.opacity = "1"; newL.style.clipPath = "none"; newL.style.maskImage = "none"; newL.style.webkitMaskImage = "none"; newL.style.transform = "none"; applyPaused(); pushSceneMedia(); };
+    const anim = (frames, opts) => { try { return newL.animate(frames, Object.assign({ duration: ms, easing: ease, fill: "forwards" }, opts || {})); } catch (e) { return null; } };
+    const oldFade = () => { if (!dismissOld) return; };
+    switch (kind) {
+      case "push": {
+        newL.style.zIndex = "2";
+        try { newL.animate([{ transform: "translateX(100%)" }, { transform: "translateX(0%)" }], { duration: ms, easing: ease, fill: "forwards" }); } catch {}
+        if (old) { try { old.style.zIndex = "1"; old.animate([{ transform: "translateX(0%)", opacity: 1 }, { transform: "translateX(-28%)", opacity: 0.6 }], { duration: ms, easing: ease, fill: "forwards" }); } catch {} }
+        setTimeout(() => { dismissOld(); newL.style.transform = "none"; newL.style.zIndex = "1"; applyPaused(); pushSceneMedia(); }, ms + 60);
+        return;
+      }
+      case "wipe": {
+        newL.style.zIndex = "2";
+        try { newL.animate([{ clipPath: "inset(0 100% 0 0)" }, { clipPath: "inset(0 0% 0 0)" }], { duration: ms, easing: ease, fill: "forwards" }); } catch {}
+        setTimeout(() => { dismissOld(); newL.style.clipPath = "none"; newL.style.zIndex = "1"; applyPaused(); pushSceneMedia(); }, ms + 60);
+        return;
+      }
+      case "iris": {
+        newL.style.zIndex = "2";
+        try { newL.animate([{ clipPath: "circle(0% at 50% 50%)" }, { clipPath: "circle(75% at 50% 50%)" }], { duration: ms, easing: ease, fill: "forwards" }); } catch {}
+        setTimeout(() => { dismissOld(); newL.style.clipPath = "none"; newL.style.zIndex = "1"; applyPaused(); pushSceneMedia(); }, ms + 60);
+        return;
+      }
+      case "zoom": {
+        try { newL.animate([{ transform: "scale(1.14)", opacity: 0 }, { transform: "scale(1)", opacity: 1 }], { duration: ms, easing: ease, fill: "forwards" }); } catch {}
+        if (old) { try { old.animate([{ opacity: 1 }, { opacity: 0 }], { duration: ms, easing: ease, fill: "forwards" }); } catch {} }
+        setTimeout(() => { dismissOld(); newL.style.transform = "none"; newL.style.opacity = "1"; newL.style.zIndex = "1"; applyPaused(); pushSceneMedia(); }, ms + 60);
+        return;
+      }
+      case "blinds": {
+        newL.style.zIndex = "2";
+        const mask = "repeating-linear-gradient(180deg, #000 0, #000 var(--blindp), transparent var(--blindp), transparent 25%)";
+        newL.style.maskImage = mask; newL.style.webkitMaskImage = mask;
+        try { newL.animate([{ "--blindp": "0%" }, { "--blindp": "25%" }], { duration: ms, easing: ease, fill: "forwards" }); } catch {}
+        setTimeout(() => { dismissOld(); newL.style.maskImage = "none"; newL.style.webkitMaskImage = "none"; newL.style.zIndex = "1"; applyPaused(); pushSceneMedia(); }, ms + 60);
+        return;
+      }
+      default: {   // crossfade
+        dismissOld();
+        if (ms > 0) {
+          newL.style.transition = "opacity " + ms + "ms ease";
+          newL.style.opacity = "0";
+          requestAnimationFrame(() => { if (newL) newL.style.opacity = "1"; });
+        } else { newL.style.opacity = "1"; }
+        newL.style.zIndex = "1";
+        applyPaused();
+        pushSceneMedia();
+      }
+    }
   }
 
   // ── 控制下发 ───────────────────────────────────────────────
@@ -429,10 +479,24 @@
     };
   }
   function pushSceneMedia() {
-    if (!layer || layerKind() !== 'scene') return;
+    if (layerKind() === "scene") {
+      try {
+        const wp = layer.contentWindow && layer.contentWindow.__wp;
+        if (wp && typeof wp.setMediaControl === "function" && !wp.__weCtl) {
+          wp.__weCtl = true;   // 只挂一次
+          wp.setMediaControl({
+            play: function () { api("/api/mediakey", { action: "playpause" }).catch(function () {}); },
+            pause: function () { api("/api/mediakey", { action: "playpause" }).catch(function () {}); },
+            playPause: function () { api("/api/mediakey", { action: "playpause" }).catch(function () {}); },
+            skipNext: function () { api("/api/mediakey", { action: "next" }).catch(function () {}); },
+            skipPrevious: function () { api("/api/mediakey", { action: "prev" }).catch(function () {}); },
+          });
+        }
+      } catch {}
+    }
     try {
-      const wp = layer.contentWindow && layer.contentWindow.__wp;
-      if (wp && typeof wp.setMedia === 'function') wp.setMedia(sceneMediaWire(nowPlaying));
+      const wp2 = layer && layer.contentWindow && layer.contentWindow.__wp;
+      if (wp2 && typeof wp2.setMedia === "function") wp2.setMedia(sceneMediaWire(nowPlaying));
     } catch {}
   }
   async function refreshNowPlaying() {
@@ -460,6 +524,40 @@
     } catch {}
   }
   setInterval(refreshNowPlaying, 2000);
+
+  // ── 壁纸属性(工作台属性面板写入 project.json,这里拉取并实时应用)──
+  let propsKey = "";
+  function applyProps() {
+    const w = current();
+    if (!w || !layer || mountedId !== w.id) return;
+    const kind = layerKind();
+    if (kind !== "scene" && kind !== "web") return;
+    api("/api/props/" + w.id).then(function (r) {
+      const props = {};
+      for (const p of (r.props || [])) props[p.name] = { value: p.value };
+      const key = JSON.stringify(props);
+      if (key === propsKey) return;
+      propsKey = key;
+      try {
+        if (kind === "scene") {
+          const wp = layer.contentWindow && layer.contentWindow.__wp;
+          if (wp && typeof wp.updateWebProps === "function") wp.updateWebProps(props);
+        } else {
+          shimSend("applyProps", { props: props });
+        }
+      } catch {}
+    }).catch(function () {});
+  }
+  setInterval(applyProps, 8000);
+
+  // ── 滚轮转发(Web 壁纸;pointer-events:none 时作者脚本收不到,经 postMessage 还原)──
+  window.addEventListener("wheel", function (e) {
+    const f = webPointerTarget;
+    if (!f || layer !== f) return;
+    const r = f.getBoundingClientRect();
+    try { f.contentWindow.postMessage({ __we: 1, op: "wheel", x: e.clientX - r.left, y: e.clientY - r.top,
+      dx: e.deltaX, dy: e.deltaY, mode: e.deltaMode, mods: (e.altKey?1:0)|(e.ctrlKey?2:0)|(e.shiftKey?4:0) }, "*"); } catch {}
+  }, { passive: true });
 
   // ── 轮询(服务器是单真源,skill 的改动会即时生效)──────────────
   let pollBusy = false;

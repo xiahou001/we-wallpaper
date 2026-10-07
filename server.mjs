@@ -620,6 +620,53 @@ const server = http.createServer(async (req, res) => {
       scheduleRotation();
       return sendJSON(res, 200, state);
     }
+    if (p.startsWith('/api/props/') && method === 'GET') {
+      // 壁纸属性面板:解析 project.json 的 general.properties(含类型/文案/值)
+      const id = p.slice('/api/props/'.length);
+      const w = inventory.find((x) => x.id === id);
+      if (!w) return sendJSON(res, 404, { error: 'no such wallpaper' });
+      let proj;
+      try { proj = JSON.parse(fs.readFileSync(w.fileAbs ? path.join(w.dir, "project.json") : path.join(w.dir, "project.json"), "utf8").replace(/^\uFEFF/, "")); } catch { return sendJSON(res, 200, { props: [] }); }
+      const gp = (proj.general && proj.general.properties) || {};
+      const list = Object.entries(gp)
+        .filter(([n, d]) => d && d.type !== 'tool')
+        .map(([name, d]) => ({ name, text: d.text || name, type: d.type || "text", value: d.value,
+          min: d.min, max: d.max, step: d.step, precision: d.precision, order: d.order == null ? 999 : d.order }))
+        .sort((a, b) => a.order - b.order);
+      return sendJSON(res, 200, { props: list, title: w.title });
+    }
+    if (p.startsWith('/api/props/') && method === 'POST') {
+      // 写回 project.json:values = { 属性名: 新值 }(color 传 #rrggbb,服务器转 WE 的 "r g b" 浮点串)
+      const id = p.slice('/api/props/'.length);
+      const w = inventory.find((x) => x.id === id);
+      if (!w) return sendJSON(res, 404, { error: 'no such wallpaper' });
+      const body = JSON.parse((await readBody(req)) || "{}");
+      const values = body.values || {};
+      const pjPath = path.join(w.dir, "project.json");
+      let proj;
+      try { proj = JSON.parse(fs.readFileSync(pjPath, "utf8").replace(/^\uFEFF/, "")); } catch { return sendJSON(res, 500, { error: "project.json unreadable" }); }
+      proj.general = proj.general || {};
+      proj.general.properties = proj.general.properties || {};
+      const applied = {};
+      for (const [name, val] of Object.entries(values)) {
+        const def = proj.general.properties[name];
+        if (!def) continue;
+        let v = val;
+        if (def.type === 'color' && /^#[0-9a-f]{6}$/i.test(String(val))) {
+          const n2 = parseInt(String(val).slice(1), 16);
+          v = [((n2 >> 16) & 255) / 255, ((n2 >> 8) & 255) / 255, (n2 & 255) / 255].map((x) => x.toFixed(4)).join(" ");
+        }
+        if (def.type === 'bool') v = Boolean(val);
+        if (def.type === 'slider') { v = Number(val); if (def.min != null) v = Math.max(def.min, v); if (def.max != null) v = Math.min(def.max, v); if (def.precision != null) v = Number(v.toFixed(def.precision)); }
+        def.value = v;
+        if (proj.properties && proj.properties[name]) proj.properties[name].value = v;
+        applied[name] = v;
+      }
+      fs.writeFileSync(pjPath, JSON.stringify(proj, null, 4));
+      diagRecord('props-applied', { id, applied });
+      return sendJSON(res, 200, { applied });
+    }
+
     if (p === '/api/scan' && method === 'POST') {
       // 手动"重新扫描壁纸库":立即扫描,并让新增/删除同步到状态与列表,清理失效缓存。
       const r = syncInventory(true);
@@ -640,7 +687,9 @@ const server = http.createServer(async (req, res) => {
     if (p === '/api/transition' && method === 'POST') {
       const body = JSON.parse((await readBody(req)) || '{}');
       const ms = Math.max(0, Math.min(8000, Number(body.ms) || 0));
-      state.transition = { kind: ms > 0 ? 'crossfade' : 'none', ms };
+      const KINDS = ['none', 'crossfade', 'push', 'wipe', 'iris', 'zoom', 'blinds'];
+      const kind = KINDS.includes(body.kind) ? body.kind : (ms > 0 ? 'crossfade' : 'none');
+      state.transition = { kind, ms };
       saveState();
       return sendJSON(res, 200, state);
     }
@@ -651,6 +700,8 @@ const server = http.createServer(async (req, res) => {
       }
       if (body.brightness != null) state.appearance.brightness = Math.max(40, Math.min(160, Number(body.brightness)));
       if (body.zoom != null) state.appearance.zoom = Math.max(80, Math.min(140, Number(body.zoom)));
+      if (body.fontFamily != null) state.appearance.fontFamily = /^[\w\u4e00-\u9fa5,\s'"-]{0,120}$/.test(String(body.fontFamily)) ? String(body.fontFamily).trim() : '';
+      if (body.cursor != null && ['', 'default', 'pointer', 'crosshair', 'text'].includes(String(body.cursor))) state.appearance.cursor = String(body.cursor);
       if (body.blur != null) state.appearance.blur = Math.max(0, Math.min(40, Number(body.blur)));
       if (body.glass != null) state.appearance.glass = Math.max(0, Math.min(100, Number(body.glass)));
       if (body.glassColor != null && /^#[0-9a-f]{6}$/i.test(String(body.glassColor))) {
@@ -681,6 +732,20 @@ const server = http.createServer(async (req, res) => {
       saveState();
       return sendJSON(res, 200, state);
     }
+    if (p === '/api/mediakey' && method === 'POST') {
+      // 媒体反向控制:壁纸里的播放按钮 → 全局媒体键(Wallpaper Engine 同款行为)
+      const body = JSON.parse((await readBody(req)) || '{}');
+      const action = String(body.action || 'playpause');
+      const vk = { playpause: 0xb3, next: 0xb5, prev: 0xb4, stop: 0xb2 }[action];
+      if (!vk || process.platform !== 'win32') return sendJSON(res, 200, { ok: false });
+      try {
+        spawn('powershell.exe', ['-NoProfile', '-Command',
+          '$k = [uint16]' + vk + '; Add-Type -MemberDefinition "[DllImport(\"user32.dll\")] public static extern void keybd_event(byte b, byte e, uint f, UIntPtr x);" -Name K -Namespace W; [W.K]::keybd_event($k, 0, 0, [UIntPtr]::Zero); Start-Sleep -Milliseconds 60; [W.K]::keybd_event($k, 0, 2, [UIntPtr]::Zero)' ],
+        { stdio: 'ignore' }).unref();
+      } catch {}
+      return sendJSON(res, 200, { ok: true, action });
+    }
+
     if (p === '/api/nowplaying') {
       return sendJSON(res, 200, nowPlaying || { available: false });
     }
@@ -777,7 +842,10 @@ const server = http.createServer(async (req, res) => {
       const glassFg = glassLight ? '#1b1e24' : '#eef1f6';
       const shadow = Math.round(a.stroke * 0.5) / 100;
       const css = `
+@property --blindp { syntax: '<percentage>'; inherits: false; initial-value: 0%; }
 html, body { background: #101216 !important; }
+#root, #root button, #root .btn { font-family: ${a.fontFamily ? JSON.stringify(a.fontFamily) + ' !important' : 'inherit'}; }
+${a.cursor ? '#root { cursor: ' + a.cursor + ' !important; }' : ''}
 #root { position: relative; z-index: 1; ${a.zoom === 100 ? '' : `zoom: ${a.zoom}%; `}text-shadow: 0 1px 2px rgba(0,0,0,${(shadow * 0.7).toFixed(2)}), 0 0 ${(Math.max(2, Math.round(a.stroke / 10)))}px rgba(0,0,0,${(shadow * 0.45).toFixed(2)}); }
 #we-wp-layer { position: fixed; inset: 0; width: 100%; height: 100%; border: 0; z-index: 0; pointer-events: none; filter: brightness(${a.brightness}%) saturate(1.08); }
 /* 文字主题跟随壁纸亮度(智能可读性) */

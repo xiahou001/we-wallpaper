@@ -125,6 +125,62 @@
     cf.onclick = function () { api('/api/advanced', { contentFilter: !state.contentFilter }).then(function (s) { state = s; render(); }); };
     cfRow.appendChild(cf);
     content.appendChild(cfRow);
+    content.appendChild(el('div', 'sec', '壁纸属性(当前壁纸的可调参数)'));
+    var propsBox = el('div', 'plistbox');
+    propsBox.id = 'wb-props';
+    propsBox.textContent = '读取中…';
+    content.appendChild(propsBox);
+    if (cur()) {
+      api('/api/props/' + cur().id).then(function (r) {
+        var box = document.getElementById('wb-props');
+        if (!box) return;
+        box.textContent = '';
+        var list = r.props || [];
+        if (!list.length) { box.textContent = '这张壁纸没有可调参数'; return; }
+        var toHex = function (v) {
+          var m = /^([\d.]+) ([\d.]+) ([\d.]+)$/.exec(String(v));
+          if (!m) return '#000000';
+          var h = function (x) { var s = Math.round(Math.max(0, Math.min(1, Number(x))) * 255).toString(16); return s.length < 2 ? '0' + s : s; };
+          return '#' + h(m[1]) + h(m[2]) + h(m[3]);
+        };
+        var toVec = function (hex) {
+          var m = /^#([0-9a-f]{2})([0-9a-f]{2})([0-9a-f]{2})$/i.exec(hex);
+          return (parseInt(m[1], 16) / 255).toFixed(4) + ' ' + (parseInt(m[2], 16) / 255).toFixed(4) + ' ' + (parseInt(m[3], 16) / 255).toFixed(4);
+        };
+        var post = function (values) { api('/api/props/' + cur().id, { values: values }).catch(function () {}); };
+        list.forEach(function (p) {
+          var row = el('div', 'row');
+          row.appendChild(el('label', null, p.text || p.name));
+          if (p.type === 'color') {
+            var c = document.createElement('input'); c.type = 'color'; c.value = toHex(p.value);
+            c.onchange = function () { post({ name: toVec(c.value) }); };
+            row.appendChild(c);
+          } else if (p.type === 'bool') {
+            var b = document.createElement('input'); b.type = 'checkbox'; b.checked = p.value === true || p.value === 1;
+            b.onchange = function () { post({ name: b.checked }); };
+            row.appendChild(b);
+          } else if (p.type === 'slider') {
+            var s = document.createElement('input'); s.type = 'range';
+            s.min = p.min != null ? p.min : 0; s.max = p.max != null ? p.max : 100; s.step = p.step != null ? p.step : 1; s.value = Number(p.value) || 0;
+            s.onchange = function () { post({ name: Number(s.value) }); };
+            row.appendChild(s); row.appendChild(el('span', 'val', String(p.value)));
+          } else if (p.type === 'combobox') {
+            var sel = document.createElement('select');
+            var opts = (p.options && p.options.values) || p.alts || [];
+            var vals = Object.keys(opts);
+            vals.forEach(function (v) { var o = document.createElement('option'); o.value = v; o.textContent = (opts[v] && opts[v].text) || v; if (String(p.value) === v) o.selected = true; sel.appendChild(o); });
+            sel.onchange = function () { post({ name: sel.value }); };
+            row.appendChild(sel);
+          } else {
+            var tx = document.createElement('input'); tx.type = 'text'; tx.value = String(p.value);
+            tx.onchange = function () { post({ name: tx.value }); };
+            row.appendChild(tx);
+          }
+          box.appendChild(row);
+        });
+      }).catch(function () { var b = document.getElementById('wb-props'); if (b) b.textContent = '读取失败'; });
+    }
+
     content.appendChild(el('div', 'sec', '选择壁纸(' + wallpapers.filter(function (x) { return x.playable; }).length + ' 张可用)'));
     var grid = el('div', 'grid');
     wallpapers.forEach(function (wp) {
@@ -167,6 +223,30 @@
       slider(content, '主区背景', state.appearance.main, 0, 100, function (v) { state.appearance.main = v; api('/api/appearance', { main: v }); });
       slider(content, '行 / 面板', state.appearance.row, 0, 100, function (v) { state.appearance.row = v; api('/api/appearance', { row: v }); });
       slider(content, '侧栏', state.appearance.sidebar, 0, 100, function (v) { state.appearance.sidebar = v; api('/api/appearance', { sidebar: v }); });
+
+      content.appendChild(el('div', 'sec', '字体与光标'));
+      var ffRow = el('div', 'row');
+      ffRow.appendChild(el('label', null, '界面字体'));
+      var fSel = document.createElement('select');
+      [['', '默认'], ['"Microsoft YaHei", sans-serif', '微软雅黑'], ['"Segoe UI", sans-serif', 'Segoe UI'], ['Consolas, monospace', 'Consolas'], ['KaiTi, serif', '楷体'], ['"Microsoft YaHei UI Light", sans-serif', '雅黑 Light']].forEach(function (p) {
+        var o = document.createElement('option'); o.value = p[0]; o.textContent = p[1];
+        if ((state.appearance.fontFamily || '') === p[0]) o.selected = true;
+        fSel.appendChild(o);
+      });
+      fSel.onchange = function () { api('/api/appearance', { fontFamily: fSel.value }).then(function (s) { state = s; render(); }); };
+      ffRow.appendChild(fSel);
+      content.appendChild(ffRow);
+      var curRow = el('div', 'row');
+      curRow.appendChild(el('label', null, '光标样式'));
+      var cSel = document.createElement('select');
+      [['', '默认'], ['pointer', '手型'], ['crosshair', '十字'], ['text', '文本']].forEach(function (p) {
+        var o = document.createElement('option'); o.value = p[0]; o.textContent = p[1];
+        if ((state.appearance.cursor || '') === p[0]) o.selected = true;
+        cSel.appendChild(o);
+      });
+      cSel.onchange = function () { api('/api/appearance', { cursor: cSel.value }).then(function (s) { state = s; render(); }); };
+      curRow.appendChild(cSel);
+      content.appendChild(curRow);
 
       content.appendChild(el('div', 'sec', '壁纸与界面'));
       slider(content, '壁纸亮度', state.appearance.brightness, 50, 160, function (v) { state.appearance.brightness = v; api('/api/appearance', { brightness: v }); });
@@ -316,7 +396,18 @@
         row.appendChild(b);
       });
       content.appendChild(row);
-      content.appendChild(el('div', 'muted', '换壁纸时新旧画面交叉淡化,当前 ' + state.transition.ms + ' ms'));
+      var kindRow = el('div', 'row');
+      kindRow.appendChild(el('label', null, '过场动画'));
+      var ksel = document.createElement('select');
+      [['crossfade', '交叉淡化'], ['push', '推移'], ['wipe', '擦除'], ['iris', '光圈'], ['zoom', '缩放'], ['blinds', '百叶窗'], ['none', '无']].forEach(function (p) {
+        var o = document.createElement('option'); o.value = p[0]; o.textContent = p[1];
+        if ((state.transition.kind || 'crossfade') === p[0]) o.selected = true;
+        ksel.appendChild(o);
+      });
+      ksel.onchange = function () { api('/api/transition', { kind: ksel.value, ms: state.transition.ms }).then(function (s) { state = s; render(); }); };
+      kindRow.appendChild(ksel);
+      content.appendChild(kindRow);
+      content.appendChild(el('div', 'muted', '换壁纸时按所选过场切换,当前 ' + state.transition.ms + ' ms'));
 
       content.appendChild(el('div', 'sec', '省电(源自 dsh-wallpaper-engine)'));
       var fpsRow = el('div', 'row');
