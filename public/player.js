@@ -113,6 +113,7 @@
     let startAt = Date.now();
     sceneWatchdog = setInterval(() => {
       if (layer !== iframe || mountedId !== w.id) { clearInterval(sceneWatchdog); return; }
+      if (document.hidden) { startAt = Date.now(); return; }   // 遮挡暂停期间不计入预算
       try {
         const win = iframe.contentWindow;
         const st = win && win.__wpStats;
@@ -156,6 +157,11 @@
       if (onLayerReady) { onLayerReady(); onLayerReady = null; }   // 首帧就绪才上屏
     });
     v.addEventListener('error', () => wallpaperFailed(w, 'video-error'));
+    const readyT = setTimeout(() => {
+      if (layer === v && v.readyState < 2) wallpaperFailed(w, 'video-load-timeout');
+    }, 20000);
+    v.addEventListener('loadeddata', () => clearTimeout(readyT), { once: true });
+    v.addEventListener('error', () => clearTimeout(readyT), { once: true });
     v.addEventListener('stalled', () => {
       clearTimeout(recoveryTimer);
       recoveryTimer = setTimeout(() => {
@@ -533,8 +539,10 @@
     const kind = layerKind();
     if (kind !== "scene" && kind !== "web") return;
     api("/api/props/" + w.id).then(function (r) {
+      const list = r.props || [];
+      if (!list.length) { propsKey = JSON.stringify([]); return; }   // 无属性:不推送空对象
       const props = {};
-      for (const p of (r.props || [])) props[p.name] = { value: p.value };
+      for (const p of list) props[p.name] = { value: p.value };
       const key = JSON.stringify(props);
       if (key === propsKey) return;
       propsKey = key;

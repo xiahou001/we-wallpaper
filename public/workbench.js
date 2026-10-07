@@ -181,6 +181,12 @@
       }).catch(function () { var b = document.getElementById('wb-props'); if (b) b.textContent = '读取失败'; });
     }
 
+    if (!wallpapers.length) {
+      var empty = el('div', 'plistbox');
+      empty.innerHTML = '未找到任何壁纸。<br>排查:① 确认 Steam 已下载 Wallpaper Engine 创意工坊壁纸;<br>② 非默认库位置请在 ~/.we-wallpaper/state.json 的 workshopDirs 里追加后点「扫描」;<br>③ 或把含 project.json 的壁纸目录放进 ~/.we-wallpaper/custom 后点「扫描」;<br>④ 自定义单文件壁纸直接用「上传壁纸」。';
+      content.appendChild(empty);
+    }
+
     content.appendChild(el('div', 'sec', '选择壁纸(' + wallpapers.filter(function (x) { return x.playable; }).length + ' 张可用)'));
     var grid = el('div', 'grid');
     wallpapers.forEach(function (wp) {
@@ -484,6 +490,14 @@
         '壁纸 ' + wallpapers.length + ' 张 · 轮播列表 ' + playlists.length + ' 个 · 当前 ' +
         (cur() ? cur().title : '未启用') + ' · 服务器 127.0.0.1:7396'));
     }
+
+  // ── 独立模式提示(非注入打开时)──
+  try {
+    if (window.parent === window) {
+      var nf = document.querySelector('.navfoot');
+      if (nf) nf.innerHTML += '<br>控制台模式:壁纸显示在 <a href="/" target="_blank" style="color:#7fd7ff">播放页</a> 或聊天窗口背景';
+    }
+  } catch {}
 
   // ── 导航 ─────────────────────────────────────────────────
   document.querySelectorAll('.nav nav button').forEach(function (b) {
