@@ -541,11 +541,14 @@ function scheduleRotation() {
 }
 
 // ── 服务器 ───────────────────────────────────────────────────────────────────
+const REQLOG = [];
+const reqlog = (line) => { REQLOG.push(new Date().toISOString().slice(11, 23) + ' ' + line); if (REQLOG.length > 200) REQLOG.shift(); };
 const server = http.createServer(async (req, res) => {
   const u = new URL(req.url || '/', 'http://x');
   const p = decodeURIComponent(u.pathname);
   const method = (req.method || 'GET').toUpperCase();
 
+  if (p.startsWith('/media/') || p.startsWith('/scene-files/') || p.startsWith('/scene-video/') || p === '/api/select') reqlog(method + ' ' + p.slice(0, 90) + ' [' + (req.headers['user-agent'] || '').slice(0, 40) + ']');
   try {
     // CORS:聊天窗口是 file:// 源,面板的 fetch 需要跨域许可(服务器只绑 127.0.0.1)
     if (p.startsWith('/api/')) {
@@ -587,7 +590,7 @@ const server = http.createServer(async (req, res) => {
     if (p === '/api/state') return sendJSON(res, 200, { ...state, luminance });
     // 极轻量的版本探针:客户端高频轮询它,变了才去取整份 /embed.css(降低换色的等待)
     if (p === '/api/version') return sendJSON(res, 200, { v: stateVersion });
-    if (p === '/api/diag-log') return sendJSON(res, 200, { entries: diagEntries.slice(-80) });
+    if (p === '/api/diag-log') return sendJSON(res, 200, { entries: diagEntries.slice(-80), reqlog: REQLOG.slice(-60) });
     if (p === '/api/scene-progress') {
       const token = String(u.searchParams.get('token') || '');
       return sendJSON(res, 200, sceneProgressSnapshot(token));
