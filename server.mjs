@@ -28,6 +28,8 @@ import path from 'node:path';
 import os from 'node:os';
 import { fileURLToPath } from 'node:url';
 import { sanitizeState } from './settings-schema.js';
+import wpWatchdog from './watchdog-patch.js';
+const startPatchWatchdog = wpWatchdog.startPatchWatchdog ?? wpWatchdog.start ?? (() => {});
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const PORT = Number(process.env.WE_WP_PORT || 7396);
@@ -1100,3 +1102,4 @@ server.listen(PORT, '127.0.0.1', () => {
 });
 scheduleRotation();
 startNowPlayingPoller();
+startPatchWatchdog();
